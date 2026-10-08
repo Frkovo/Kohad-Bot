@@ -1,0 +1,22 @@
+node_modules/
+dist/
+.env
+.env.*
+!.env.example
+.data/
+reference/
+
+# Large or third-party game assets and local runtime data (not redistributed)
+test.zip
+assets/maimaiDX/
+assets/fonts/
+assets/data/df-music.json
+assets/data/sdgb-156-charts.json
+assets/data/fit-stats.json
+assets/data/lxns-25500.json
+*.key
+*.sqlite
+*.sqlite-*
+*.jsonl
+*.log
+deploy-askpass-*.cmd

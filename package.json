@@ -1,0 +1,31 @@
+{
+  "name": "sdgb-discord-bot",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Discord 多服务器 B50：国服、JP/国际服 NET 与私服只读接入",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "postbuild": "node scripts/deploy-hk.mjs",
+    "test": "tsx --test test/**/*.test.ts",
+    "start": "node dist/index.js",
+    "preview": "tsx scripts/preview.ts",
+    "preview:multiserver": "tsx scripts/preview-multiserver.ts"
+  },
+  "dependencies": {
+    "@resvg/resvg-js": "^2.6.2",
+    "cheerio": "^1.2.0",
+    "discord.js": "14.27.0",
+    "tough-cookie": "^6.0.2",
+    "undici": "^6.29.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.7.4",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.3"
+  }
+}
