@@ -28,8 +28,11 @@ const workers = new Set<Worker>()
 const idle: Worker[] = []
 const active = new Map<Worker, RenderJob>()
 const WORKERS = 2
-// The SVG is laid out at 1400×1600; rasterize at 2× so text and art stay sharp when Discord scales the image down.
+// The SVG is laid out at 1400×1600; rasterize at 2.5× (3500×4000) for sharpness, falling back to 2× when the PNG would exceed Discord's upload limit.
 const RENDER_ZOOM = 2
+// usvg 对每个 <text> 都会重新处理整张字体，16MB 的完整 CJK 字体会让解析耗时 10s+。
+// 先放 ~1.5MB 的常用字子集（ASCII/假名/GB2312），完整字体只作缺字回退（解析 ~0.5s）。
+const FONT_FILES = ["Sub-Regular", "Sub-Bold", "Regular", "Bold"].map(n => `${ROOT}/fonts/NotoSansCJKsc-${n}.otf`)
 function dispatch() {
   while (jobs.length && (idle.length || workers.size < WORKERS)) {
     let worker = idle.pop()
@@ -37,13 +40,16 @@ function dispatch() {
       worker = new Worker(`
         const { parentPort, workerData } = require('node:worker_threads');
         const { Resvg } = require(workerData.rendererPath);
+        const draw = (svg, zoom) => new Resvg(svg, { font: { loadSystemFonts: false, fontFiles: workerData.fontFiles }, fitTo: { mode: 'zoom', value: zoom } }).render().asPng();
         parentPort.on('message', svg => {
           try {
-            const png = new Resvg(svg, { font: { loadSystemFonts: false, fontFiles: workerData.fontFiles }, fitTo: { mode: 'zoom', value: workerData.zoom } }).render().asPng();
+            let png = draw(svg, workerData.zoom);
+            // Discord 默认上传上限 10MB：超限则降到 2×。
+            if (png.length > workerData.maxBytes) png = draw(svg, 2);
             parentPort.postMessage({ png });
           } catch (error) { parentPort.postMessage({ error: error.message }); }
         });
-      `, { eval: true, workerData: { rendererPath, zoom: RENDER_ZOOM, fontFiles: [`${ROOT}/fonts/NotoSansCJKsc-Regular.otf`, `${ROOT}/fonts/NotoSansCJKsc-Bold.otf`] } })
+      `, { eval: true, workerData: { rendererPath, zoom: RENDER_ZOOM, maxBytes: 9_000_000, fontFiles: FONT_FILES } })
       workers.add(worker)
       const current = worker
       current.on("message", (response: { png?: Uint8Array; error?: string }) => {
