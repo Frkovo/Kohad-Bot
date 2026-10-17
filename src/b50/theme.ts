@@ -16,7 +16,7 @@ export function picture(src: string, x: number, y: number, w: number, h: number)
   return `<image x="${x}" y="${y}" width="${w}" height="${h}" preserveAspectRatio="none" href="${src}"/>`
 }
 export function text(value: unknown, x: number, y: number, size = 16, color = "#ffffff", weight = 700, anchor = "start") {
-  return `<text x="${x}" y="${y}" font-family="Noto Sans CJK SC" font-size="${size}" font-weight="${weight}" fill="${color}" text-anchor="${anchor}">${escape(value)}</text>`
+  return `<text x="${x}" y="${y}" font-family="Rounded Mplus 1c, Noto Sans CJK SC" font-size="${size}" font-weight="${weight}" fill="${color}" text-anchor="${anchor}">${escape(value)}</text>`
 }
 export const credit = () => text(t("image.credit"), 700, 1570, 21, "#7c81ff", 700, "middle")
 // Rasterizing a B50 takes longer than Discord's 3-second ACK window. Keep it off
@@ -32,7 +32,8 @@ const WORKERS = 2
 const RENDER_ZOOM = 2
 // usvg 对每个 <text> 都会重新处理整张字体，16MB 的完整 CJK 字体会让解析耗时 10s+。
 // 先放 ~1.5MB 的常用字子集（ASCII/假名/GB2312），完整字体只作缺字回退（解析 ~0.5s）。
-const FONT_FILES = ["Sub-Regular", "Sub-Bold", "Regular", "Bold"].map(n => `${ROOT}/fonts/NotoSansCJKsc-${n}.otf`)
+const FONT_FILES = [`${ROOT}/fonts/MPlusRounded1c-Sub-Medium.ttf`, `${ROOT}/fonts/MPlusRounded1c-Sub-Bold.ttf`,
+  ...["Sub-Regular", "Sub-Bold", "Regular", "Bold"].map(n => `${ROOT}/fonts/NotoSansCJKsc-${n}.otf`)]
 function dispatch() {
   while (jobs.length && (idle.length || workers.size < WORKERS)) {
     let worker = idle.pop()
