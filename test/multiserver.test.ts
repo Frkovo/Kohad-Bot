@@ -369,7 +369,7 @@ test("NET errors after public B50 ACK are delivered ephemerally; incomplete capa
     await withStore(async()=>{
       serverStore().bind("user-a","jp","fixture","Fixture",{username:"fixture",password:"synthetic-password",cardIndex:2})
       t.mock.method(globalThis,"fetch",async()=>new Response("synthetic-sensitive-response",{status:503}))
-      const query=interaction("b50",{refresh:true})
+      const query=interaction("b50",{refresh:true,public:true})
       await handleRemoteB50(query.command,cfg,"jp")
       assert.equal(query.value.ephemeral,false)
       assert.match(query.messages[0].content,/具体原因已私密发送/)
@@ -410,13 +410,29 @@ test("refresh:false renders stale remote cache without a network login and does 
       store.setPreferred("user-a","intl")
       const calls:string[]=[]
       t.mock.method(globalThis,"fetch",(url:any)=>{calls.push(String(url));throw new Error("artwork offline fixture")})
-      const query=interaction("b50",{server:"jp",refresh:false})
+      const query=interaction("b50",{server:"jp",refresh:false,public:true})
       await handleB50(query.command,cfg,createQueue(1),new Map())
       assert.equal(query.value.ephemeral,false)
       assert.equal(query.messages[0].files.length,1)
       assert.match(query.messages[0].embeds[0].toJSON().title,/日服/)
       assert.equal(calls.some(url=>new URL(url).hostname!=="shama.dxrating.net"),false)
       assert.equal(store.preferred("user-a"),"intl")
+    })
+})
+test("NET maintenance during an explicit refresh renders the last local snapshot with a notice instead of failing",async t=>{
+    await withStore(async()=>{
+      const store=serverStore(),revision=store.bind("user-a","jp","account-a","Fixture",{username:"fixture",password:"fixture",cardIndex:2})
+      const chart=[...regionCatalog("jp").index.values()].find(c=>c.level===3)!
+      const cached=snapshot();cached.records=[{...record,title:chart.title,type:chart.type,level:chart.level}];store.save("user-a","jp",revision,cached)
+      t.mock.method(globalThis,"fetch",async(url:any)=>{
+        if(new URL(String(url)).hostname==="maimaidx.jp") return new Response("<html><head><title>メンテナンス中</title></head><body></body></html>",{status:200,headers:{"content-type":"text/html"}})
+        throw new Error("artwork offline fixture")
+      })
+      const query=interaction("b50",{server:"jp",refresh:true,public:true})
+      await handleB50(query.command,cfg,createQueue(1),new Map())
+      assert.equal(query.messages.some(m=>m.followUp),false)
+      assert.equal(query.messages[0].files.length,1)
+      assert.match(query.messages[0].embeds[0].toJSON().description??"",/正在维护/)
     })
 })
 test("automatic sync cannot fall back to the old account cache after an in-flight rebind",async t=>{
@@ -426,7 +442,7 @@ test("automatic sync cannot fall back to the old account cache after an in-fligh
       let release!:()=>void
       const wait=new Promise<void>(resolve=>{release=resolve})
       t.mock.method(globalThis,"fetch",async()=>{await wait;return new Response("unavailable",{status:503})})
-      const query=interaction("b50")
+      const query=interaction("b50",{public:true,refresh:true})
       const running=handleRemoteB50(query.command,cfg,"jp")
       await new Promise<void>(resolve=>setImmediate(resolve))
       store.bind("user-a","jp","new-account","New Player",{username:"fixture",password:"new-fixture",cardIndex:2})

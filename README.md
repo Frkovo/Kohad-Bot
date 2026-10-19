@@ -13,9 +13,9 @@
 | `/sync [server]` | 国服弹窗填新二维码；远程服后台刷新 |
 | `/unbind [server]` | 确认后删除远程服登录信息，保留该服成绩缓存 |
 | `/upload sgwcmaid:<二维码或链接>` | 统一读取、保存本地成绩 / 次数 / 玩家资料，并自动同步水鱼和落雪，无需按钮确认 |
-| `/b50 [server] [source] [refresh] [sgwcmaid]` | 使用所选服曲库与规则生成 B35 + B15；server 仅覆盖当次查询 |
-| `/nb50 [server] [source] [refresh] [sgwcmaid]` | 国服使用水鱼 `chart_stats.fit_diff`；其他服缺可靠拟合数据时明确拒绝 |
-| `/pc50 [server] [source] [refresh] [sgwcmaid]` | 国服本地全库累计次数 Top50（含宴谱）；NET 缺完整次数 |
+| `/b50 [server] [source] [refresh] [sgwcmaid] [public]` | 使用所选服曲库与规则生成 B35 + B15；server 仅覆盖当次查询；未指定时依次使用已保存的默认、数据库中唯一有数据的服务器，都无法确定则弹出选择菜单；图片默认仅自己可见，`public:true` 才发到频道；带 sgwcmaid 时图片先发出，水鱼/落雪同步结果随后私密通知 |
+| `/nb50 [server] [source] [refresh] [sgwcmaid] [public]` | 国服使用水鱼 `chart_stats.fit_diff`；其他服缺可靠拟合数据时明确拒绝；图片可见性同 `/b50` |
+| `/pc50 [server] [source] [refresh] [sgwcmaid] [public]` | 国服本地全库累计次数 Top50（含宴谱）；NET 缺完整次数；图片可见性同 `/b50` |
 | `/binddf` | DC-only 国服二维码入口与已有水鱼绑定说明；不再发起网页绑定 |
 | `/bindlx [method]` | Discord 内输入 **15 位好友码**；支持换绑、解绑 |
 | `/getuserall sgwcmaid:<二维码或链接>` | 导出完整迁移包，同时保存本地资料并自动同步两边查分器 |
@@ -30,7 +30,7 @@
 
 所有扫码参数均支持：完整 84 位 `SGWCMAID…`、去掉 SGWC 的 80 位 `MAID…`、去掉完整前缀的时间戳 + 64 位十六进制内容，以及 `https://wq.wahlap.net/qrcode/req/MAID….html?...` 华立二维码链接（包括 Markdown 链接形式）。程序只在本地解析路径，忽略链接查询参数，不访问或提前消费二维码链接。
 
-`/b50`、`/nb50`、`/pc50` 和 `/help` 的响应对频道所有人可见；`/upload` 与账号绑定仅调用者可见。命令白名单保持原有配置。
+`/b50`、`/nb50`、`/pc50` 的成绩图默认仅调用者可见，加 `public:true` 才会发到频道；`/help` 仍对频道所有人可见；`/upload` 与账号绑定仅调用者可见。命令白名单保持原有配置。
 
 ## 并发与响应
 

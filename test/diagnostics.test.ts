@@ -198,7 +198,7 @@ test("redirected query strings and credentials never reach logs or private repli
       status: 302,
       headers: { location: `https://evil.example/cb?sid=${SECRET_SID}&token=${SECRET_TOKEN}` },
     }))
-    const query = interaction("b50", { server: "jp", refresh: true })
+    const query = interaction("b50", { server: "jp", refresh: true, public: true })
     await handleRemoteB50(query.command, cfg, "jp")
     const replies = JSON.stringify(query.messages)
     const logs = readFileSync(logPath, "utf8")
@@ -221,7 +221,7 @@ test("DNS, TLS and timeout failures after a public B50 ACK are private, classifi
     await withStore(async logPath => {
       seedBinding()
       ctx.mock.method(globalThis, "fetch", async () => { throw error })
-      const query = interaction("b50", { server: "jp", refresh: true })
+      const query = interaction("b50", { server: "jp", refresh: true, public: true })
       await handleRemoteB50(query.command, cfg, "jp")
       assert.equal(query.value.ephemeral, false)
       assert.match(query.messages[0].content, /具体原因已私密发送/)
@@ -244,26 +244,26 @@ test("DNS, TLS and timeout failures after a public B50 ACK are private, classifi
   }
 })
 
-test("cache fallback after a failed automatic sync logs the event and sends private details with the same id", async ctx => {
+test("a stale local snapshot is served without contacting NET; only an explicit refresh reaches NET and hides its error body", async ctx => {
   quietConsole(ctx)
   await withStore(async logPath => {
     seedBinding("2000-01-01T00:00:00.000Z")
+    const hosts: string[] = []
     ctx.mock.method(globalThis, "fetch", async (input: unknown) => {
-      if (new URL(String(input)).hostname === "maimaidx.jp") return new Response("synthetic-sensitive-response", { status: 503 })
+      const host = new URL(String(input)).hostname
+      hosts.push(host)
+      if (host === "maimaidx.jp") return new Response("synthetic-sensitive-response", { status: 503 })
       throw new Error("artwork offline fixture")
     })
-    const query = interaction("b50", { server: "jp" })
-    await handleRemoteB50(query.command, cfg, "jp")
-    const embed = query.messages[0].embeds[0].toJSON()
-    const id = idIn(embed.description ?? "")
-    assert.match(embed.description ?? "", /使用上次成功缓存/)
-    assert.equal(query.messages[1].followUp, true)
-    assert.equal(query.messages[1].flags, MessageFlags.Ephemeral)
-    assert.equal(idIn(query.messages[1].content), id)
-    assert.match(query.messages[1].content, /NET 暂时无法访问（HTTP 503）|错误类别：`http`/)
-    const lines = readLog(logPath)
-    assert.ok(lines.some(line => line.event === "cache-fallback" && line.id === id))
-    assert.equal(JSON.stringify(query.messages).includes("synthetic-sensitive-response"), false)
+    const cached = interaction("b50", { server: "jp" })
+    await handleRemoteB50(cached.command, cfg, "jp")
+    assert.equal(hosts.includes("maimaidx.jp"), false)
+    assert.equal(cached.messages[0].embeds[0].toJSON().description?.includes("使用上次成功缓存"), false)
+
+    const refreshed = interaction("b50", { server: "jp", refresh: true })
+    await handleRemoteB50(refreshed.command, cfg, "jp")
+    assert.equal(hosts.includes("maimaidx.jp"), true)
+    assert.equal(JSON.stringify(refreshed.messages).includes("synthetic-sensitive-response"), false)
     assert.equal(readFileSync(logPath, "utf8").includes("synthetic-sensitive-response"), false)
   })
 })
@@ -386,11 +386,24 @@ test("CN migration transport and malformed HTTP failures share a private reply i
   })
 })
 
+test("B50 without public:true defers ephemerally, so a failure is never posted to the channel", async ctx => {
+  quietConsole(ctx)
+  await withStore(async () => {
+    seedBinding()
+    ctx.mock.method(globalThis, "fetch", async () => { throw Object.assign(new Error("timed out"), { name: "TimeoutError" }) })
+    const query = interaction("b50", { server: "jp", refresh: true })
+    await handleRemoteB50(query.command, cfg, "jp")
+    assert.equal(query.value.ephemeral, true)
+    assert.equal(query.messages.length, 1)
+    assert.match(query.messages[0].content, /请求超时/)
+  })
+})
+
 test("a CN B50 QR failure after a public ACK sends diagnostics privately and logs the same id", async ctx => {
   quietConsole(ctx)
   await withStore(async logPath => {
     ctx.mock.method(globalThis, "fetch", async () => { throw fetchFailed({ code: "ECONNREFUSED", message: SECRET_PASSWORD }) })
-    const query = interaction("b50", { server: "cn", sgwcmaid: "SGWCMAID" + "123456789012" + "A".repeat(64) })
+    const query = interaction("b50", { server: "cn", public: true, sgwcmaid: "SGWCMAID" + "123456789012" + "A".repeat(64) })
     await handleB50(query.command, { ...cfg, migrateUrl: "https://migrate.fixture", migrateApiKey: SECRET_PASSWORD, callTimeoutMs: 1000 } as BotConfig, createQueue(3), new Map())
     const privateReply = query.messages.find(message => message.followUp && message.flags === MessageFlags.Ephemeral)
     assert.ok(privateReply)

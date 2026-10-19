@@ -63,6 +63,16 @@ export function createServerStore(file = DEFAULT, suppliedKey?: Buffer) {
       const value = db.prepare("SELECT server FROM server_preferences WHERE discord_id=?").get(user)?.server
       return isEnabledServer(value) ? value : "cn"
     },
+    savedPreferred(user: string): ServerId | null {
+      const value = db.prepare("SELECT server FROM server_preferences WHERE discord_id=?").get(user)?.server
+      return isEnabledServer(value) ? value : null
+    },
+    // Only live credentials count; an unbound server keeps its snapshot but is not "in use".
+    boundServers(user: string): RemoteServer[] {
+      return db.prepare("SELECT server FROM server_bindings WHERE discord_id=? AND encrypted_auth IS NOT NULL").all(user)
+        .map(row => String(row.server))
+        .filter((server): server is RemoteServer => isEnabledServer(server) && server !== "cn")
+    },
     setPreferred(user: string, server: ServerId) {
       requireEnabledServer(server)
       db.prepare("INSERT INTO server_preferences VALUES(?,?) ON CONFLICT(discord_id) DO UPDATE SET server=excluded.server").run(user, server)

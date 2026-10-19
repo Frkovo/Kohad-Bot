@@ -5,7 +5,8 @@ import { lxnsBindings } from "./lxns/bindings.js"
 import { authorizedLxConfig, type LxOAuthConfig } from "./lxns/oauth.js"
 
 export function dfCfg(cfg: BotConfig): DfOAuthConfig | null {
-  return cfg.dfClientId && cfg.dfClientSecret ? { clientId: cfg.dfClientId, clientSecret: cfg.dfClientSecret, authUrl: cfg.dfAuthUrl } : null
+  if (!cfg.dfOAuthEnabled) return null
+  return cfg.dfClientId &&cfg.dfClientSecret ? { clientId: cfg.dfClientId, clientSecret: cfg.dfClientSecret, authUrl: cfg.dfAuthUrl } : null
 }
 export function lxCfg(cfg: BotConfig): LxnsConfig | null {
   return cfg.lxDevToken ? { devToken: cfg.lxDevToken, apiBase: cfg.lxApiBase } : null

@@ -23,9 +23,24 @@ export function resolveServer(explicit: string | null, preferred: ServerId): Ser
   requireEnabledServer(explicit)
   return explicit
 }
+// B50 only: explicit choice > saved /server default > the single server with usable data. null means ask the player.
+export function resolveB50Server(explicit: string | null, saved: ServerId | null, dataServers: readonly ServerId[]): ServerId | null {
+  if (explicit) {
+    if (!isServer(explicit)) throw new UserError(t("server.invalidOption"))
+    requireEnabledServer(explicit)
+    return explicit
+  }
+  if (saved && isEnabledServer(saved)) return saved
+  const usable = dataServers.filter(isEnabledServer)
+  return usable.length === 1 ? usable[0] : null
+}
 export class UserError extends Error {}
 // A provider HTTP status failure: first-party text plus the numeric status only (never the response body).
 // It is not a session problem, so callers must not re-login on it.
+// NET's daily maintenance window. Explicit refreshes fall back to the local snapshot instead of failing.
+export class NetMaintenanceError extends UserError {
+  constructor() { super(t("net.maintenance")) }
+}
 export class HttpStatusError extends UserError {
   constructor(readonly status: number) { super(t("net.httpStatus", { status })) }
 }

@@ -9,7 +9,7 @@ import { COMMANDS_JSON, COMMAND_NAMES } from "./commands.js"
 import { type MigrateSuccess } from "./migrate-client.js"
 import { buildPayload, PayloadTooLargeError, type BuiltPayload, type OutputKind } from "./payload.js"
 import { createQueue } from "./queue.js"
-import { handleB50, handleBindDf, handleBindLx, handleButton, handleModal, handleUpload, handleHelp, replyFailure } from "./handlers.js"
+import { handleB50, handleB50Pick, handleBindDf, handleBindLx, handleButton, handleModal, handleUpload, handleHelp, replyFailure } from "./handlers.js"
 import { startOAuthServer } from "./oauth-callback.js"
 import { errorText, isSgwcFormat, normalizeSgwc, QR_INPUT_HINT } from "./util.js"
 import { importAccount, ImportBusyError, ImportQueueFullError } from "./import-account.js"
@@ -127,9 +127,11 @@ async function handleCommand(interaction: ChatInputCommandInteraction, kind: Out
     if (built.split) notes.push(t("payload.split", { count: built.files.length }))
     if (built.reduced.length > 0) notes.push(t("payload.reduced", { fields: built.reduced.join(t("list.itemSeparator")) }))
     const note = notes.join(t("list.separator"))
+    // The migration summary reports sync results, so this reply waits for them (unlike /b50).
+    const sync = imported.sync ? await imported.sync : undefined
     await interaction.editReply({
       content: "",
-      embeds: [summaryEmbed(kind, result, built, note, imported.sync)],
+      embeds: [summaryEmbed(kind, result, built, note, sync)],
       files: built.files.map(f => new AttachmentBuilder(f.data, { name: f.name })),
     })
   } catch (e) {
@@ -197,6 +199,10 @@ client.on(Events.InteractionCreate, (interaction) => {
   }
   if (interaction.isModalSubmit()) {
     void handleModal(interaction, cfg, queue).catch(e => new Trace("runtime").fail(e))
+    return
+  }
+  if (interaction.isStringSelectMenu() && interaction.customId.startsWith("ms:pick:")) {
+    void handleB50Pick(interaction, cfg, queue).catch(e => new Trace("runtime").fail(e))
     return
   }
   if (interaction.isStringSelectMenu() && interaction.customId.startsWith("ms:")) {

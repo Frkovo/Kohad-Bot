@@ -27,6 +27,7 @@ export type BotConfig = {
   pullConcurrency: number
   maxPendingReads: number
   /** 水鱼 OAuth（未配置时 /binddf、/upload 的 OAuth 路径与 /b50 绑定源不可用） */
+  dfOAuthEnabled: boolean
   dfClientId: string
   dfClientSecret: string
   dfAuthUrl: string
@@ -73,6 +74,8 @@ export function loadConfig(): BotConfig {
     cooldownMs: (Number.isFinite(cooldown) && cooldown >= 0 ? cooldown : 30) * 1000,
     pullConcurrency: Math.max(1, Math.min(6, Number.isFinite(concurrency) ? Math.floor(concurrency) : 3)),
     maxPendingReads: Math.max(6, Math.min(30, Number.isFinite(pending) ? Math.floor(pending) : 9)),
+    // 水鱼 OAuth 暂时旁路：默认关闭，一律走用户自备的 Import-Token；DF_OAUTH_ENABLED=1 恢复
+    dfOAuthEnabled: process.env.DF_OAUTH_ENABLED?.trim() === "1",
     dfClientId: (process.env.DF_CLIENT_ID ?? "").trim(),
     dfClientSecret: (process.env.DF_CLIENT_SECRET ?? "").trim(),
     dfAuthUrl: (process.env.DF_AUTH_URL ?? "https://auth.diving-fish.com").trim().replace(/\/+$/, ""),

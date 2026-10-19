@@ -85,9 +85,12 @@ export async function fetchMusicCatalog(): Promise<Map<number, DfMusic>> {
   return map
 }
 
-export async function fetchPlayerRecords(token: string): Promise<DfPlayerRecords> {
+/** token = OAuth access token（Bearer）；{ importToken } = 旧版 Import-Token */
+export async function fetchPlayerRecords(token: string | { importToken: string }): Promise<DfPlayerRecords> {
   const res = await fetch(`${DF_PROBER}/player/records`, {
-    headers: { authorization: `Bearer ${token}`, accept: "application/json" },
+    headers: typeof token === "string"
+      ? { authorization: `Bearer ${token}`, accept: "application/json" }
+      : { "Import-Token": token.importToken, accept: "application/json" },
     signal: AbortSignal.timeout(30000),
   })
   if (res.status === 401) throw new DfUnauthorizedError()
@@ -106,8 +109,10 @@ export async function fetchPlayerRecords(token: string): Promise<DfPlayerRecords
 export type UpdateAuth = { token?: string; importToken?: string }
 export type UpdateResult = { ok: boolean; status: number; message: string }
 
-/** 上传成绩（update_records）：records 为水鱼导入格式（pu.pu 同款映射见 df/upload.ts） */
-export async function updateRecords(records: unknown[], auth: UpdateAuth): Promise<UpdateResult> {
+// 水鱼文档未给 update_records 的单次上限；整包一次提交疑似触发服务端 500，故分片顺序提交
+export const UPDATE_CHUNK = 100
+
+async function postRecordsBatch(records: unknown[], auth: UpdateAuth): Promise<{ ok: boolean; status: number }> {
   const headers: Record<string, string> = { "content-type": "application/json", accept: "application/json" }
   if (auth.token) headers.authorization = `Bearer ${auth.token}`
   else if (auth.importToken) headers["Import-Token"] = auth.importToken
@@ -118,5 +123,17 @@ export async function updateRecords(records: unknown[], auth: UpdateAuth): Promi
     signal: AbortSignal.timeout(120000),
   })
   // Don't echo arbitrary response bodies which can reflect request credentials.
-  return { ok: res.ok, status: res.status, message: res.ok ? t("df.upload.accepted") : t("df.upload.rejected", { status: res.status, hint: res.status === 401 || res.status === 403 ? t("df.upload.authHint") : "" }) }
+  return { ok: res.ok, status: res.status }
+}
+
+/** 上传成绩（update_records）：records 为水鱼导入格式（pu.pu 同款映射见 df/upload.ts）。按 UPDATE_CHUNK 顺序分片，任一片被拒即停止，不再继续写入 */
+export async function updateRecords(records: unknown[], auth: UpdateAuth): Promise<UpdateResult> {
+  const total = Math.ceil(records.length / UPDATE_CHUNK)
+  for (let i = 0, batch = 1; i < records.length; i += UPDATE_CHUNK, batch++) {
+    const res = await postRecordsBatch(records.slice(i, i + UPDATE_CHUNK), auth)
+    if (!res.ok) {
+      return { ok: false, status: res.status, message: t("df.upload.partial", { batch, total, status: res.status, sent: i, hint: res.status === 401 || res.status === 403 ? t("df.upload.authHint") : "" }) }
+    }
+  }
+  return { ok: true, status: 200, message: t("df.upload.accepted") }
 }

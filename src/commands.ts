@@ -54,7 +54,9 @@ export const COMMANDS_JSON = [
       { name: t("command.choice.df"), value: "df" },
       { name: t("command.choice.lxns"), value: "lxns" },
       { name: t("command.choice.net"), value: "net" },
-    )),
+    ))
+    .addBooleanOption(o => o.setName("public").setDescription(t("command.public")))
+    .addBooleanOption(o => o.setName("hd").setDescription(t("command.hd"))),
   ...["nb50", "pc50"].map(name => new SlashCommandBuilder().setName(name)
     .setDescription(name === "nb50" ? t("command.nb50") : t("command.pc50"))
     .addStringOption(serverOption)
@@ -63,7 +65,9 @@ export const COMMANDS_JSON = [
       { name: t("command.choice.auto"), value: "auto" },
       { name: t("command.choice.localCache"), value: "local" },
     ))
-    .addStringOption(o => o.setName("sgwcmaid").setDescription(t("command.nbSgwcmaid")).setMinLength(1).setMaxLength(6000))),
+    .addStringOption(o => o.setName("sgwcmaid").setDescription(t("command.nbSgwcmaid")).setMinLength(1).setMaxLength(6000))
+    .addBooleanOption(o => o.setName("public").setDescription(t("command.public")))
+    .addBooleanOption(o => o.setName("hd").setDescription(t("command.hd")))),
 ].map(c => c.toJSON())
 
 export const COMMAND_NAMES = COMMANDS_JSON.map(c => c.name)

@@ -13,7 +13,7 @@ const snapshot: Snapshot = {accountKey:"synthetic-preview",profile:{name:"演示
     dxScore:Math.floor((chart.maxDxScore??3000)*0.97),fc:i%2?"fc":"app",fs:"fsdp"}))}
 const calculated = calculateRemote("intl",snapshot,"b50")
 mkdirSync(".data/previews",{recursive:true})
-writeFileSync(".data/previews/intl-b50-preview.png",await renderB50({title:snapshot.profile.name,profile:snapshot.profile,result:calculated.result,
+writeFileSync(".data/previews/intl-b50-preview.webp",await renderB50({title:snapshot.profile.name,profile:snapshot.profile,result:calculated.result,
   useCnArtwork:false,serverLabel:SERVER_BADGE.intl,footerNote:calculated.version+" · 演示数据 · "+calculated.note}))
-writeFileSync(".data/previews/help-preview.png",await renderHelp())
+writeFileSync(".data/previews/help-preview.webp",await renderHelp())
 console.log(JSON.stringify({version:calculated.version,charts:calculated.result.b35.length+calculated.result.b15.length,missing:calculated.result.missing,synthetic:true}))

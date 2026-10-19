@@ -1,9 +1,10 @@
 // 绑定、双目标上传与 B50 / 拟合 B50 / PC50；扫码成功后保存本地成绩与玩家资料。
 // 扫码直接保存并同步；成绩图公开，绑定与导入私密。
+import { randomUUID } from "node:crypto"
 import {
   ActionRowBuilder, AttachmentBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder, MessageFlags,
-  ModalBuilder, TextInputBuilder, TextInputStyle,
-  type ButtonInteraction, type ChatInputCommandInteraction, type ModalSubmitInteraction,
+  ModalBuilder, StringSelectMenuBuilder, TextInputBuilder, TextInputStyle,
+  type ButtonInteraction, type ChatInputCommandInteraction, type ModalSubmitInteraction, type StringSelectMenuInteraction,
 } from "discord.js"
 import type { BotConfig } from "./config.js"
 import { t } from "./messages.js"
@@ -11,6 +12,7 @@ import { Trace, failureText, safeReason, type DiagnosticFailure, type Operation 
 import { createQueue } from "./queue.js"
 import { normalizeSgwc, isSgwcFormat, errorText, QR_INPUT_HINT } from "./util.js"
 import { getDfAccessToken, clearDfTokenCache, NotBoundError, startDfAuthorization } from "./df/oauth.js"
+import { dfImportTokens } from "./df/import-token.js"
 import { startLxAuthorization, completeLxAuthorization, type LxOAuthConfig } from "./lxns/oauth.js"
 import { fetchPlayerRecords, DfUnauthorizedError } from "./df/client.js"
 import { fetchPlayer, fetchOwnPlayer, fetchBests, fetchScores, LxnsApiError } from "./lxns/client.js"
@@ -25,16 +27,17 @@ import { lxPlayerProfile, type PlayerProfile } from "./local/profile.js"
 import { dfCfg, lxCfg, lxOAuthCfg, lxUserCfg } from "./provider-config.js"
 import { importAccount, ImportBusyError, ImportQueueFullError } from "./import-account.js"
 import { syncFields, type SyncResult } from "./sync.js"
-import { resolveServer, UserError } from "./multiserver/registry.js"
+import { SERVER_CHOICES, SERVER_NAMES, UserError, checkAccess, isEnabledServer } from "./multiserver/registry.js"
 import { serverStore } from "./multiserver/store.js"
-import { bindRow, handleRemoteB50, handleServerButton, handleServerModal } from "./multiserver/interactions.js"
+import { b50Request, resolveB50Query, type B50Request, type B50Target } from "./multiserver/b50-query.js"
+import { bindRow, runRemoteB50, handleServerButton, handleServerModal } from "./multiserver/interactions.js"
 
 type BotQueue = ReturnType<typeof createQueue>
 
 export async function handleHelp(interaction: ChatInputCommandInteraction): Promise<void> {
   try {
     await interaction.deferReply()
-    await interaction.editReply({ files: [new AttachmentBuilder(await renderHelp(), { name: "kohad-help.png" })] })
+    await interaction.editReply({ files: [new AttachmentBuilder(await renderHelp(), { name: "kohad-help.webp" })] })
   } catch (e) { await safeError(interaction, e, "command", true) }
 }
 
@@ -50,7 +53,7 @@ async function gate(interaction: ChatInputCommandInteraction, cfg: BotConfig, la
 }
 
 // 失败统一经 Trace 归类：私密回复排查详情；公开延迟（publicAck）时公开仅显示排查编号。
-export async function replyFailure(interaction: ChatInputCommandInteraction, failure: DiagnosticFailure, publicAck = false, details = failureText(failure)): Promise<void> {
+export async function replyFailure(interaction: ChatInputCommandInteraction | StringSelectMenuInteraction, failure: DiagnosticFailure, publicAck = false, details = failureText(failure)): Promise<void> {
   if (interaction.deferred && publicAck) {
     await interaction.editReply({ content: t("diagnostic.public", { id: failure.id }) })
     await interaction.followUp({ content: details, flags: MessageFlags.Ephemeral })
@@ -60,7 +63,7 @@ export async function replyFailure(interaction: ChatInputCommandInteraction, fai
   else await interaction.reply({ content: details, flags: MessageFlags.Ephemeral })
 }
 
-async function safeError(interaction: ChatInputCommandInteraction, e: unknown, operation: Operation, publicAck = false, trace = new Trace(operation)): Promise<void> {
+async function safeError(interaction: ChatInputCommandInteraction | StringSelectMenuInteraction, e: unknown, operation: Operation, publicAck = false, trace = new Trace(operation)): Promise<void> {
   const failure = trace.fail(e)
   if (failure.code === "10062") return
   try {
@@ -75,7 +78,11 @@ async function safeError(interaction: ChatInputCommandInteraction, e: unknown, o
 export async function handleBindDf(interaction: ChatInputCommandInteraction, cfg: BotConfig): Promise<void> {
   if (!(await gate(interaction, cfg, new Map()))) return
   const df = dfCfg(cfg)
-  if (!df) { await interaction.reply({ content: t("err.dfUnconfigured"), flags: MessageFlags.Ephemeral }); return }
+  if (!df) {
+    // OAuth 旁路：只提供 Import-Token 录入入口
+    if (!cfg.dfOAuthEnabled) { await interaction.reply({ content: t("df.bindApiKey"), components: [dfImportButtons()], flags: MessageFlags.Ephemeral }); return }
+    await interaction.reply({ content: t("err.dfUnconfigured"), flags: MessageFlags.Ephemeral }); return
+  }
   await interaction.deferReply({ flags: MessageFlags.Ephemeral })
   const trace = new Trace("bind")
   try {
@@ -84,9 +91,43 @@ export async function handleBindDf(interaction: ChatInputCommandInteraction, cfg
     const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
       new ButtonBuilder().setURL(auth.url).setLabel(t("df.button.authorize")).setStyle(ButtonStyle.Link),
     )
-    await interaction.editReply({ content: t("oauth.start", { provider: t("provider.df") }), components: [row] })
+    await interaction.editReply({ content: t("oauth.start", { provider: t("provider.df") }), components: [row, dfImportButtons()] })
     trace.note("complete")
   } catch (e) { await replyFailure(interaction, trace.fail(e)) }
+}
+
+// ---------- 水鱼旧版 Import-Token（用户自备；同步写入成绩时优先于 OAuth） ----------
+
+function dfImportButtons(): ActionRowBuilder<ButtonBuilder> {
+  return new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder().setCustomId("dfimport:open").setLabel(t("df.button.importToken")).setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId("dfimport:clear").setLabel(t("df.button.importClear")).setStyle(ButtonStyle.Danger),
+  )
+}
+
+async function handleDfImportButton(interaction: ButtonInteraction, cfg: BotConfig): Promise<void> {
+  if (cfg.allowedUserIds.size && !cfg.allowedUserIds.has(interaction.user.id)) { await interaction.reply({ content: t("access.denied"), flags: MessageFlags.Ephemeral }); return }
+  if (interaction.customId.split(":")[1] === "open") {
+    const modal = new ModalBuilder()
+      .setCustomId("dfimport:save")
+      .setTitle(t("df.importModal.title"))
+      .addComponents(new ActionRowBuilder<TextInputBuilder>().addComponents(
+        new TextInputBuilder().setCustomId("token").setLabel(t("df.importModal.field")).setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(256),
+      ))
+    await interaction.showModal(modal)
+    return
+  }
+  const removed = dfImportTokens.remove(interaction.user.id)
+  await interaction.reply({ content: removed ? t("df.importCleared") : t("df.importNone"), flags: MessageFlags.Ephemeral })
+}
+
+async function handleDfImportModal(interaction: ModalSubmitInteraction, cfg: BotConfig): Promise<void> {
+  if (cfg.allowedUserIds.size && !cfg.allowedUserIds.has(interaction.user.id)) { await interaction.reply({ content: t("access.denied"), flags: MessageFlags.Ephemeral }); return }
+  const token = interaction.fields.getTextInputValue("token").trim()
+  // 格式未经水鱼文档确认：只校验非空、无空白、长度上限
+  if (!/^\S{1,256}$/.test(token)) { await interaction.reply({ content: t("df.importInvalid"), flags: MessageFlags.Ephemeral }); return }
+  dfImportTokens.set(interaction.user.id, token)
+  await interaction.reply({ content: t("df.importSaved", { tail: token.slice(-4) }), flags: MessageFlags.Ephemeral })
 }
 
 // ---------- /bindlx（落雪：网页 OAuth 授权，回调 /oauth-callback/lxns；粘贴授权码作为备用） ----------
@@ -236,27 +277,45 @@ export async function handleUpload(interaction: ChatInputCommandInteraction, cfg
 // ---------- /b50 ----------
 
 export async function handleB50(interaction: ChatInputCommandInteraction, cfg: BotConfig, queue: BotQueue, lastUsed: Map<string, number>): Promise<void> {
-  const userId = interaction.user.id
-  const importing = interaction.commandName === "upload" || interaction.commandName === "import"
-  const mode = ["nb50", "fitb50"].includes(interaction.commandName) ? "fitb50" : interaction.commandName === "pc50" ? "pc50" : "b50"
+  const importing = isImportCommand(interaction.commandName)
   const trace = new Trace(importing ? "import" : "b50", "cn")
-  const providerFailures: DiagnosticFailure[] = []
+  const req = b50Request(interaction, importing)
   try {
     if (!(await gate(interaction, cfg, lastUsed))) return
+    const target = importing ? CN_TARGET : resolveB50Query(req)
+    // No manual choice and no single server with data: ask the player; the pick resumes this query.
+    if (!target) { await promptServer(interaction, req); return }
+    await runB50(interaction, cfg, queue, req, target, trace)
+  } catch (e) { await safeError(interaction, e, "b50", publicReply(req), trace) }
+}
+
+const CN_TARGET: B50Target = { server: "cn", fromData: false }
+const isImportCommand = (name: string) => name === "upload" || name === "import"
+// Only rendered images can be public; /upload is always the caller's own sync report.
+const publicReply = (req: B50Request) => !isImportCommand(req.commandName) && req.public
+type CommandOrSelect = ChatInputCommandInteraction | StringSelectMenuInteraction
+
+// Runs one query against an already-chosen server. Errors are reported here, so callers need no catch.
+async function runB50(interaction: CommandOrSelect, cfg: BotConfig, queue: BotQueue, req: B50Request, target: B50Target, trace: Trace): Promise<void> {
+  const userId = req.userId
+  const importing = isImportCommand(req.commandName)
+  const shared = publicReply(req)
+  const mode = ["nb50", "fitb50"].includes(req.commandName) ? "fitb50" : req.commandName === "pc50" ? "pc50" : "b50"
+  const providerFailures: DiagnosticFailure[] = []
+  try {
+    if (target.server !== "cn") { await runRemoteB50(interaction, cfg, target.server, req, target.fromData); return }
     if (!importing) {
-      const server = resolveServer(interaction.options.getString("server"), serverStore().preferred(userId))
-      if (server !== "cn") { await handleRemoteB50(interaction, cfg, server); return }
-      if (interaction.options.getString("source") === "net") throw new UserError(t("b50.cnNoNet"))
-      if (interaction.options.getBoolean?.("refresh") && !interaction.options.getString("sgwcmaid")) throw new UserError(t("b50.cnRefreshNeedQr"))
+      if (req.source === "net") throw new UserError(t("b50.cnNoNet"))
+      if (req.refresh && !req.sgwcmaid) throw new UserError(t("b50.cnRefreshNeedQr"))
     }
-    const raw = interaction.options.getString("sgwcmaid", importing)
+    const raw = req.sgwcmaid
     const qr = raw ? normalizeSgwc(raw) : null
     if (raw && !isSgwcFormat(qr ?? "")) {
       await interaction.reply({ content: t("qr.invalid", { hint: QR_INPUT_HINT }), flags: MessageFlags.Ephemeral }); return
     }
-    await interaction.deferReply(importing ? { flags: MessageFlags.Ephemeral } : {})
+    await interaction.deferReply(shared ? {} : { flags: MessageFlags.Ephemeral })
     let imported = false
-    let sync: SyncResult | undefined
+    let sync: Promise<SyncResult> | undefined
     let reused = false
     if (qr) {
       trace.step("import")
@@ -268,7 +327,7 @@ export async function handleB50(interaction: ChatInputCommandInteraction, cfg: B
       }
       if (!account.result.ok) {
         const details = errorText(account.result)
-        await replyFailure(interaction, account.result.diagnostic ?? trace.fail(new UserError(t("bind.cnReadFailed"))), !importing, details)
+        await replyFailure(interaction, account.result.diagnostic ?? trace.fail(new UserError(t("bind.cnReadFailed"))), shared, details)
         return
       }
       sync = account.sync
@@ -279,12 +338,14 @@ export async function handleB50(interaction: ChatInputCommandInteraction, cfg: B
     const local = scoreDatabase().get(userId)
     let profile: PlayerProfile | undefined = local?.profile
     if (importing) {
+      // /upload is the sync report itself, so it waits for prober results.
+      const syncResult = sync ? await sync : undefined
       const embed = new EmbedBuilder().setTitle(t("upload.embedTitle", { name: local?.name ?? t("value.unknownPlayer") })).setColor(0x7c81ff)
         .addFields({ name: t("upload.localField"), value: t("upload.localValue", { count: local?.inputs.length ?? 0 }), inline: false })
-      if (sync) embed.addFields(syncFields(sync))
+      if (syncResult) embed.addFields(syncFields(syncResult))
       await interaction.editReply({ content: t("upload.content", { status: reused ? t("upload.reused") : t("upload.done") }), embeds: [embed], components: [] }); return
     }
-    const source = interaction.options.getString("source") ?? "auto"
+    const source = req.source ?? "auto"
     const errors: string[] = []
     let inputs: B50Input[] = []
     let title = t("value.unknownPlayer"), subtitle = "", accountRating: number | null = null
@@ -296,15 +357,19 @@ export async function handleB50(interaction: ChatInputCommandInteraction, cfg: B
     const remote = !localOnly && !(source === "auto" && local)
     if (remote && (source === "auto" || source === "df")) {
       const df = dfCfg(cfg)
-      if (df) {
+      const importToken = dfImportTokens.get(userId)?.token
+      if (df || importToken) {
         try {
           trace.step("provider")
           let records
-          try { records = await fetchPlayerRecords((await getDfAccessToken(df, userId, "prober.records.read")).token) }
-          catch (e) {
-            if (!(e instanceof DfUnauthorizedError)) throw e
-            clearDfTokenCache(userId)
-            records = await fetchPlayerRecords((await getDfAccessToken(df, userId, "prober.records.read")).token)
+          if (importToken) records = await fetchPlayerRecords({ importToken })
+          else {
+            try { records = await fetchPlayerRecords((await getDfAccessToken(df!, userId, "prober.records.read")).token) }
+            catch (e) {
+              if (!(e instanceof DfUnauthorizedError)) throw e
+              clearDfTokenCache(userId)
+              records = await fetchPlayerRecords((await getDfAccessToken(df!, userId, "prober.records.read")).token)
+            }
           }
           if (!Array.isArray(records.records)) throw new UserError(t("err.dfIncomplete"))
           inputs = records.records.map(r => ({ musicId: Number(r.song_id), level: Number(r.level_index), type: r.type === "DX" ? "DX" : "SD",
@@ -317,7 +382,7 @@ export async function handleB50(interaction: ChatInputCommandInteraction, cfg: B
           providerFailures.push(failure)
           errors.push(e instanceof NotBoundError ? t("err.dfNotBound") : t("err.dfFailed", { reason: safeReason(e) }))
         }
-      } else errors.push(t("err.dfUnconfigured"))
+      } else errors.push(cfg.dfOAuthEnabled ? t("err.dfUnconfigured") : t("err.dfNotBound"))
     }
     if (remote && !inputs.length && (source === "auto" || source === "lxns")) {
       try {
@@ -349,7 +414,7 @@ export async function handleB50(interaction: ChatInputCommandInteraction, cfg: B
     if (!result && inputs.length) result = computeB50(inputs, index, { newVersionFrom: cfg.b50NewVersion, versionTo: cfg.b50NewVersion + 500, mode })
     if (!result) {
       const failure = providerFailures[0] ?? trace.fail(new UserError(t("b50.noResult", { reason: mode === "b50" ? t("b50.cannotRead") : t("b50.noLocal"), errors: errors.join("\n") })))
-      await replyFailure(interaction, failure, !importing)
+      await replyFailure(interaction, failure, shared)
       for (const extra of providerFailures.slice(1)) await interaction.followUp({ content: failureText(extra), flags: MessageFlags.Ephemeral })
       return
     }
@@ -360,21 +425,79 @@ export async function handleB50(interaction: ChatInputCommandInteraction, cfg: B
     // The latest imported game profile is the user's requested identity on score images.
     if (profile) title = profile.name
     trace.step("image.render")
-    const png = await renderB50({ title, subtitle, accountRating, result, footerNote, profile })
+    const image = await renderB50({ title, subtitle, accountRating, result, footerNote, profile, hd: req.hd })
     const footerParts = [footerNote, result.missing ? t("b50.missingCount", { count: result.missing }) : "", result.fitMissing ? t("b50.fitMissingCount", { count: result.fitMissing }) : ""]
     const embed = new EmbedBuilder().setTitle(t("b50.legacyTitle", { label, name: title })).setColor(0x7c81ff)
       .addFields({ name: pc ? t("b50.field.pc50Total") : t("b50.field.calcRating"), value: String(pc ? totalPC : result.total), inline: true },
         { name: t("b50.field.count"), value: String(result.b35.length + result.b15.length), inline: true },
         { name: t("b50.field.source"), value: subtitle, inline: false })
       .setFooter({ text: footerParts.filter(Boolean).join(t("b50.footerSeparator")) })
-    if (sync) embed.addFields(syncFields(sync))
+    if (target.fromData) embed.setDescription(t("b50.autoServer", { server: SERVER_NAMES.cn }))
+    if (sync) embed.addFields({ name: t("b50.field.sync"), value: t("b50.syncPending"), inline: false })
     trace.step("reply")
-    await interaction.editReply({ content: "", embeds: [embed], files: [new AttachmentBuilder(png, { name: `${mode === "fitb50" ? "nb50" : mode}-${pc ? totalPC : result.total}.png` })] })
+    await interaction.editReply({ content: "", embeds: [embed], files: [new AttachmentBuilder(image, { name: `${mode === "fitb50" ? "nb50" : mode}-${pc ? totalPC : result.total}.webp` })] })
     for (const failure of providerFailures) await interaction.followUp({ content: failureText(failure), flags: MessageFlags.Ephemeral })
       .catch(() => trace.note("reply-failed"))
+    if (sync) notifySync(interaction, sync, trace)
     trace.note("complete")
-  } catch (e) { await safeError(interaction, e, "b50", !importing, trace) }
+  } catch (e) { await safeError(interaction, e, "b50", shared, trace) }
 }
+
+// The image is already sent; the prober sync outcome goes only to the requester, as an ephemeral follow-up.
+function notifySync(interaction: CommandOrSelect, sync: Promise<SyncResult>, trace: Trace): void {
+  const send = (payload: { content?: string; embeds?: EmbedBuilder[] }) =>
+    interaction.followUp({ ...payload, flags: MessageFlags.Ephemeral }).catch(() => trace.note("reply-failed"))
+  sync.then(
+    result => send({ embeds: [new EmbedBuilder().setTitle(t("b50.syncDone")).setColor(0x7c81ff).addFields(syncFields(result))] }),
+    error => send({ content: failureText(trace.fail(error)) }),
+  )
+}
+// ---------- /b50 服务器选择（无法唯一确定时由玩家选择） ----------
+
+type PendingPick = { user: string; req: B50Request; timer: NodeJS.Timeout }
+const pendingPicks = new Map<string, PendingPick>()
+const PICK_MS = 10 * 60 * 1000
+
+function addPick(req: B50Request): string {
+  for (const [id, entry] of pendingPicks) if (entry.user === req.userId) { clearTimeout(entry.timer); pendingPicks.delete(id) }
+  const id = randomUUID()
+  const timer = setTimeout(() => { pendingPicks.delete(id) }, PICK_MS)
+  timer.unref()
+  pendingPicks.set(id, { user: req.userId, req, timer })
+  return id
+}
+
+// Single use and owner only. A wrong user does not consume the pick.
+function takePick(id: string, user: string): B50Request {
+  const entry = pendingPicks.get(id)
+  if (!entry || entry.user !== user) throw new UserError(t("interaction.expired"))
+  clearTimeout(entry.timer)
+  pendingPicks.delete(id)
+  return entry.req
+}
+
+async function promptServer(interaction: ChatInputCommandInteraction, req: B50Request): Promise<void> {
+  const id = addPick(req)
+  const menu = new StringSelectMenuBuilder().setCustomId(`ms:pick:${id}`).setPlaceholder(t("b50.pickPlaceholder"))
+    .addOptions(SERVER_CHOICES.map(choice => ({ label: choice.name, value: choice.value })))
+  await interaction.reply({ content: t("b50.pickServer"), flags: MessageFlags.Ephemeral, components: [new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(menu)] })
+}
+
+// The pick is saved as the default (player's choice), then the same query runs against that server.
+export async function handleB50Pick(interaction: StringSelectMenuInteraction, cfg: BotConfig, queue: BotQueue): Promise<void> {
+  const trace = new Trace("b50")
+  let shared = false
+  try {
+    checkAccess(interaction.user.id, cfg.allowedUserIds)
+    const req = takePick(interaction.customId.split(":")[2] ?? "", interaction.user.id)
+    shared = publicReply(req)
+    const server = interaction.values[0]
+    if (!isEnabledServer(server)) throw new UserError(t("server.invalidOption"))
+    serverStore().setPreferred(req.userId, server)
+    await runB50(interaction, cfg, queue, req, { server, fromData: false }, trace)
+  } catch (e) { await safeError(interaction, e, "b50", shared, trace) }
+}
+
 // ---------- 交互统一分发（index 调用） ----------
 
 export async function handleButton(interaction: ButtonInteraction, cfg: BotConfig): Promise<void> {
@@ -392,6 +515,7 @@ export async function handleButton(interaction: ButtonInteraction, cfg: BotConfi
     return
   }
   if (ns === "dfup") { await interaction.reply({ content: t("df.uploadChanged"), flags: MessageFlags.Ephemeral }); return }
+  if (ns === "dfimport") return handleDfImportButton(interaction, cfg)
   if (ns === "lx") return handleLxButton(interaction, cfg)
 }
 
@@ -399,5 +523,6 @@ export async function handleModal(interaction: ModalSubmitInteraction, cfg: BotC
   const ns = interaction.customId.split(":")[0]
   if (ns === "ms") return handleServerModal(interaction, cfg, queue)
   if (ns === "dfup") { await interaction.reply({ content: t("df.uploadModalChanged"), flags: MessageFlags.Ephemeral }); return }
+  if (ns === "dfimport") return handleDfImportModal(interaction, cfg)
   if (ns === "lx") return handleLxModal(interaction, cfg)
 }

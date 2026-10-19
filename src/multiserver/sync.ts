@@ -2,11 +2,10 @@ import { serverStore } from "./store.js"
 import { NetClient } from "./net.js"
 import { fetchPrivateSnapshot } from "./private.js"
 import { fetchMumurSnapshot } from "../mumur/client.js"
-import { UserError, requireEnabledServer, type Credentials, type RemoteServer, type Snapshot } from "./registry.js"
+import { UserError, NetMaintenanceError, requireEnabledServer, type Credentials, type RemoteServer, type Snapshot } from "./registry.js"
 import { t } from "../messages.js"
 import { Trace } from "../diagnostics.js"
 
-export const CACHE_MS = 15 * 60 * 1000
 const jobs = new Map<string, { controller: AbortController; promise: Promise<Snapshot> }>()
 const jobKey = (user: string, server: RemoteServer) => JSON.stringify([user, server])
 export function cancelSync(user: string, server: RemoteServer) { jobs.get(jobKey(user, server))?.controller.abort(); jobs.delete(jobKey(user, server)) }
@@ -45,7 +44,11 @@ export async function syncRemote(user: string, server: RemoteServer, progress?: 
       store.updateCredentials(user, server, binding.revision, auth)
       trace.note("complete", { records: snapshot.records.length })
       return snapshot
-    } catch (error) { throw trace.fail(error) }
+    } catch (error) {
+      // The failure is logged either way; maintenance stays typed so B50 can answer from the local snapshot.
+      const failure = trace.fail(error)
+      throw error instanceof NetMaintenanceError ? error : failure
+    }
   })().finally(() => { if (jobs.get(key)?.promise === promise) jobs.delete(key) })
   jobs.set(key, { controller, promise })
   return promise

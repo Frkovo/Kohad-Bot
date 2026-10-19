@@ -7,14 +7,15 @@ import { importAccount } from "../import-account.js"
 import { normalizeSgwc, isSgwcFormat } from "../util.js"
 import { renderB50 } from "../b50/render.js"
 import { t } from "../messages.js"
-import { classifyError, failureText, Trace, type DiagnosticFailure } from "../diagnostics.js"
-import { SERVER_NAMES, SERVER_BADGE, resolveServer, requireEnabledServer, checkAccess, isServer, UserError, type ServerId, type RemoteServer, type Credentials, type Snapshot } from "./registry.js"
+import { classifyError, failureText, Trace } from "../diagnostics.js"
+import { SERVER_NAMES, SERVER_BADGE, resolveServer, requireEnabledServer, checkAccess, isServer, UserError, NetMaintenanceError, type ServerId, type RemoteServer, type Credentials, type Snapshot } from "./registry.js"
 import { serverStore } from "./store.js"
 import { NetClient, accountKey, type Card } from "./net.js"
 import { fetchPrivateSnapshot, privateEndpoint } from "./private.js"
 import { fetchMumurSnapshot } from "../mumur/client.js"
 import { calculateRemote } from "./catalog.js"
-import { CACHE_MS, cancelSync, syncRemote } from "./sync.js"
+import { b50Request, type B50Request } from "./b50-query.js"
+import { cancelSync, syncRemote } from "./sync.js"
 
 type ReplyInteraction = ChatInputCommandInteraction | ButtonInteraction | ModalSubmitInteraction | StringSelectMenuInteraction
 type Pending = { user: string; server: RemoteServer; auth: Credentials; client?: NetClient; cards?: Card[]; snapshot?: Snapshot; selected?: number; busy?: boolean; revision: number; expires: number; timer: NodeJS.Timeout; trace: Trace }
@@ -68,7 +69,8 @@ export async function handleServerCommand(interaction: ChatInputCommandInteracti
     trace.server = server
     if (name === "server") {
       if (interaction.options.getString("server")) store.setPreferred(interaction.user.id, server)
-      await interaction.reply({ content: t("bind.defaultServer", { server: SERVER_NAMES[server] }), flags: MessageFlags.Ephemeral }); return
+      const saved = store.savedPreferred(interaction.user.id)
+      await interaction.reply({ content: saved ? t("bind.defaultServer", { server: SERVER_NAMES[saved] }) : t("bind.defaultServerUnset"), flags: MessageFlags.Ephemeral }); return
     }
     if (name === "bind" || (name === "sync" && server === "cn")) { await interaction.showModal(modal(server)); return }
     if (name === "unbind") {
@@ -85,17 +87,20 @@ export async function handleServerCommand(interaction: ChatInputCommandInteracti
     }
   } catch (error) { await report(interaction, trace, error) }
 }
+// Direct callers (tests) read the request from the slash command; /b50 passes the request it already resolved.
 export async function handleRemoteB50(interaction: ChatInputCommandInteraction, cfg: BotConfig, server: RemoteServer) {
+  return runRemoteB50(interaction, cfg, server, b50Request(interaction), false)
+}
+export async function runRemoteB50(interaction: ReplyInteraction, cfg: BotConfig, server: RemoteServer, req: B50Request, fromData: boolean) {
   const trace = new Trace("b50", server)
   try {
     checkAccess(interaction.user.id, cfg.allowedUserIds)
     requireEnabledServer(server)
-    if (interaction.options.getString("sgwcmaid")) throw new UserError(t("b50.sgwcOtherServer"))
-    const source = interaction.options.getString("source") ?? "auto", refreshOption = interaction.options.getBoolean?.("refresh"), refresh = refreshOption === true
+    if (req.sgwcmaid) throw new UserError(t("b50.sgwcOtherServer"))
+    const source = req.source ?? "auto", refreshOption = req.refresh, refresh = refreshOption === true
     if (!["auto", "local", "net"].includes(source) || (source === "net" && server !== "jp" && server !== "intl")) throw new UserError(t("b50.unsupportedSource"))
     if (source === "local" && refresh) throw new UserError(t("b50.localRefresh"))
-    if (source === "net" && refreshOption === false) throw new UserError(t("b50.netNoRefresh"))
-    const mode = ["nb50", "fitb50"].includes(interaction.commandName) ? "fitb50" : interaction.commandName === "pc50" ? "pc50" : "b50"
+    const mode = ["nb50", "fitb50"].includes(req.commandName) ? "fitb50" : req.commandName === "pc50" ? "pc50" : "b50"
     if (mode === "fitb50") throw new UserError(t("b50.fitUnsupported"))
     if (mode === "pc50" && ["jp", "intl"].includes(server)) throw new UserError(t("b50.pc50Unsupported"))
     trace.step("binding.read")
@@ -104,17 +109,19 @@ export async function handleRemoteB50(interaction: ChatInputCommandInteraction, 
     if (!snapshot && !binding?.bound) {
       await interaction.reply({ content: t("b50.unbound", { server: SERVER_NAMES[server] }), flags: MessageFlags.Ephemeral, components: [bindRow(server)] }); return
     }
-    await interaction.deferReply()
-    let privateFailure: DiagnosticFailure | undefined
-    const stale = !snapshot || Date.now() - Date.parse(snapshot.fetchedAt) >= CACHE_MS
-    if ((refresh || source === "net") && !binding?.bound) throw new UserError(t("b50.unboundCache"))
-    if (source !== "local" && refreshOption !== false && (refresh || stale || source === "net") && binding?.bound) {
+    // report() reads interaction.ephemeral, so a private defer also makes failures private.
+    await interaction.deferReply(req.public ? {} : { flags: MessageFlags.Ephemeral })
+    // Local snapshots are authoritative: the NET is contacted only on an explicit refresh, or when no snapshot exists yet.
+    if (refresh && !binding?.bound) throw new UserError(t("b50.unboundCache"))
+    let maintenanceNote = ""
+    if (source !== "local" && refreshOption !== false && (refresh || !snapshot) && binding?.bound) {
       try { snapshot = await syncRemote(interaction.user.id, server, undefined, trace) }
       catch (error) {
-        if (!snapshot || refresh || source === "net") throw error
-        if (store.binding(interaction.user.id, server)?.accountKey !== snapshot.accountKey) throw new UserError(t("b50.accountChangedSync"))
-        privateFailure = trace.fail(error)
+        if (snapshot && store.binding(interaction.user.id, server)?.accountKey !== snapshot.accountKey) throw new UserError(t("b50.accountChangedSync"))
+        // NET maintenance is expected daily: show the last successful snapshot and say so, rather than failing the command.
+        if (!snapshot || !(error instanceof NetMaintenanceError)) throw error
         trace.note("cache-fallback")
+        maintenanceNote = t("b50.maintenanceCache", { time: snapshot.fetchedAt.slice(0, 16).replace("T", " ") })
       }
     }
     if (!snapshot) throw new UserError(t("b50.noSnapshot"))
@@ -122,20 +129,17 @@ export async function handleRemoteB50(interaction: ChatInputCommandInteraction, 
     const calculated = calculateRemote(server, snapshot, mode)
     const subtitle = t("b50.subtitle", { server: SERVER_NAMES[server], version: calculated.version, fetchedAt: snapshot.fetchedAt.slice(0, 16).replace("T", " ") })
     trace.step("image.render")
-    const png = await renderB50({ title: snapshot.profile.name, profile: snapshot.profile, accountRating: snapshot.profile.rating, result: calculated.result,
+    const image = await renderB50({ hd: req.hd, title: snapshot.profile.name, profile: snapshot.profile, accountRating: snapshot.profile.rating, result: calculated.result,
       subtitle, serverLabel: SERVER_BADGE[server], useCnArtwork: false, footerNote: t("b50.footer", { version: calculated.version, note: calculated.note }) })
     if (store.binding(interaction.user.id, server)?.accountKey !== snapshot.accountKey) throw new UserError(t("b50.accountChangedRender"))
     trace.step("reply")
     const pc = mode === "pc50", modeLabel = pc ? t("label.pc50") : t("label.b50")
     const embed = new EmbedBuilder().setTitle(t("b50.embedTitle", { server: SERVER_NAMES[server], mode: modeLabel, name: snapshot.profile.name })).setColor(0x7c81ff)
-      .setDescription([subtitle, calculated.note,
-        privateFailure ? t("diagnostic.cacheFailed", { id: privateFailure.id }) : "",
+      .setDescription([fromData ? t("b50.autoServer", { server: SERVER_NAMES[server] }) : "", subtitle, calculated.note, maintenanceNote,
         calculated.result.missing ? t("b50.missingCharts", { count: calculated.result.missing }) : ""].filter(Boolean).join("\n"))
       .addFields({ name: pc ? t("b50.field.pc50Total") : t("b50.field.calcRating"), value: String(pc ? [...calculated.result.b35, ...calculated.result.b15].reduce((n, r) => n + (r.playCount ?? 0), 0) : calculated.result.total), inline: true },
         { name: t("b50.field.accountRating"), value: snapshot.profile.rating === undefined ? t("value.notProvided") : String(snapshot.profile.rating), inline: true })
-    await interaction.editReply({ content: "", embeds: [embed], files: [new AttachmentBuilder(png, { name: `${server}-${mode}.png` })] })
-    if (privateFailure) await interaction.followUp({ content: failureText(privateFailure), flags: MessageFlags.Ephemeral })
-      .catch(followError => trace.note("reply-failed", classifyError(followError)))
+    await interaction.editReply({ content: "", embeds: [embed], files: [new AttachmentBuilder(image, { name: `${server}-${mode}.webp` })] })
     trace.note("complete")
   } catch (error) { await report(interaction, trace, error) }
 }

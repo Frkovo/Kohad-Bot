@@ -56,6 +56,9 @@ export function createScoreDatabase(file = DEFAULT) {
       } catch (e) { db.exec("ROLLBACK"); throw e }
       return this.get(discordId)
     },
+    has(discordId: string): boolean {
+      return !!db.prepare("SELECT 1 FROM accounts WHERE discord_id=?").get(discordId)
+    },
     get(discordId: string): { name: string; gameId: string; importedAt: string; profile: PlayerProfile; inputs: B50Input[] } | null {
       const account = db.prepare("SELECT * FROM accounts WHERE discord_id=?").get(discordId)
       if (!account) return null
@@ -72,3 +75,4 @@ export function createScoreDatabase(file = DEFAULT) {
 }
 let instance: ReturnType<typeof createScoreDatabase> | null = null
 export function scoreDatabase() { return instance ??= createScoreDatabase(process.env.LOCAL_SCORE_DB || DEFAULT) }
+export function closeScoreDatabase() { instance?.close(); instance = null }

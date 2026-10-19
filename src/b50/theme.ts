@@ -4,13 +4,17 @@ import { fileURLToPath } from "node:url"
 import { Worker } from "node:worker_threads"
 import { createRequire } from "node:module"
 import { inflateRawSync } from "node:zlib"
+import sharp from "sharp"
 import { t } from "../messages.js"
 import { UserError } from "../multiserver/registry.js"
 
 const ROOT = fileURLToPath(new URL("../../assets/", import.meta.url))
 const IMAGE_CACHE = fileURLToPath(new URL("../../.data/img-cache/", import.meta.url))
-// The SVG is laid out at 1400×1600 and rasterized at 2× (2800×3200, ~7MB PNG); 2.5× and up exceed Discord's upload limit.
-const RENDER_ZOOM = 2
+// The SVG is laid out at 1400×1600 and rasterized at RENDER_ZOOM (2800×3200, ~1.6MB WebP), or HD_ZOOM when the
+// player asks for it (5600×6400, ~4.6MB, about 4× the CPU time and ~1GB peak memory, so HD renders run one at a time).
+export const RENDER_ZOOM = Number(process.env.B50_RENDER_ZOOM) || 2
+export const HD_ZOOM = Number(process.env.B50_HD_ZOOM) || 4
+const WEBP_QUALITY = 90
 
 const assetCache = new Map<string, string>()
 export function asset(file: string) {
@@ -112,8 +116,9 @@ export const credit = () => text(t("image.credit"), 700, 1570, 21, "#7c81ff", 70
 // the gateway thread; a bounded pool lets other users' interactions ACK promptly.
 const rendererPath = createRequire(import.meta.url).resolve("@resvg/resvg-js")
 type ScaleItem = { src: string; w: number; h: number }
-type Task = { kind: "render"; svg: string } | { kind: "scale"; items: ScaleItem[] }
-type Job = { task: Task; resolve: (result: Uint8Array[]) => void; reject: (error: Error) => void }
+type Task = { kind: "render"; svg: string; zoom: number } | { kind: "scale"; items: ScaleItem[] }
+type WorkerResult = { pngs?: Uint8Array[]; raw?: Uint8Array; width?: number; height?: number }
+type Job = { task: Task; resolve: (result: WorkerResult) => void; reject: (error: Error) => void }
 const jobs: Job[] = []
 const workers = new Set<Worker>()
 const idle: Worker[] = []
@@ -123,25 +128,29 @@ function dispatch() {
   while (jobs.length && (idle.length || workers.size < WORKERS)) {
     let worker = idle.pop()
     if (!worker) {
+      // Renders return raw RGBA (transferred, not copied) so the main thread can encode WebP without a PNG round trip.
       worker = new Worker(`
         const { parentPort, workerData } = require('node:worker_threads');
         const { Resvg } = require(workerData.rendererPath);
         const options = zoom => ({ font: { loadSystemFonts: false }, fitTo: { mode: 'zoom', value: zoom } });
         parentPort.on('message', task => {
           try {
-            const pngs = task.kind === 'render'
-              ? [new Resvg(task.svg, options(workerData.zoom)).render().asPng()]
-              : task.items.map(({ src, w, h }) => new Resvg('<svg xmlns="http://www.w3.org/2000/svg" width="' + w + '" height="' + h + '"><image width="' + w + '" height="' + h + '" preserveAspectRatio="none" href="' + src + '"/></svg>', options(1)).render().asPng());
-            parentPort.postMessage({ pngs });
+            if (task.kind === 'render') {
+              const image = new Resvg(task.svg, options(task.zoom)).render();
+              const result = { raw: image.pixels, width: image.width, height: image.height };
+              try { parentPort.postMessage(result, [result.raw.buffer]); } catch { parentPort.postMessage(result); }
+            } else {
+              parentPort.postMessage({ pngs: task.items.map(({ src, w, h }) => new Resvg('<svg xmlns="http://www.w3.org/2000/svg" width="' + w + '" height="' + h + '"><image width="' + w + '" height="' + h + '" preserveAspectRatio="none" href="' + src + '"/></svg>', options(1)).render().asPng()) });
+            }
           } catch (error) { parentPort.postMessage({ error: error.message }); }
         });
-      `, { eval: true, workerData: { rendererPath, zoom: RENDER_ZOOM } })
+      `, { eval: true, workerData: { rendererPath } })
       workers.add(worker)
       const current = worker
-      current.on("message", (response: { pngs?: Uint8Array[]; error?: string }) => {
+      current.on("message", (response: WorkerResult & { error?: string }) => {
         const job = active.get(current)
         active.delete(current)
-        if (response.pngs) job?.resolve(response.pngs)
+        if (response.error === undefined) job?.resolve(response)
         else job?.reject(new Error(response.error || t("image.failed")))
         current.unref()
         idle.push(current)
@@ -166,7 +175,7 @@ function dispatch() {
   }
 }
 function run(task: Task) {
-  return new Promise<Uint8Array[]>((resolve, reject) => { jobs.push({ task, resolve, reject }); dispatch() })
+  return new Promise<WorkerResult>((resolve, reject) => { jobs.push({ task, resolve, reject }); dispatch() })
 }
 
 function rememberScaled(key: string, uri: string) {
@@ -175,12 +184,15 @@ function rememberScaled(key: string, uri: string) {
   return uri
 }
 const IMAGE_TAG = /<image x="([^"]*)" y="([^"]*)" width="([^"]*)" height="([^"]*)" preserveAspectRatio="none" href="img:(\d+)"\/>/g
-async function resolveImages(svg: string) {
+const pixels = (size: string, zoom: number) => Math.max(1, Math.round(Number(size) * zoom))
+const MAX_PRESCALE_PIXELS = 12_000_000
+export async function resolveImages(svg: string, zoom = RENDER_ZOOM) {
   const wanted = new Map<string, { id: number; w: number; h: number; file: string }>()
   for (const m of svg.matchAll(IMAGE_TAG)) {
-    const id = Number(m[5]), w = Math.max(1, Math.round(Number(m[3]) * RENDER_ZOOM)), h = Math.max(1, Math.round(Number(m[4]) * RENDER_ZOOM))
+    const id = Number(m[5]), w = pixels(m[3], zoom), h = pixels(m[4], zoom)
     const key = `${id}:${w}x${h}`
-    if (scaledImages.has(key) || wanted.has(key)) continue
+    // A prescaled HD background (5600×6400) would cost far more memory than resvg's own upscale saves in time.
+    if (w * h > MAX_PRESCALE_PIXELS || scaledImages.has(key) || wanted.has(key)) continue
     imageHashes[id] ??= createHash("sha1").update(imageSources[id]).digest("hex")
     const file = `${IMAGE_CACHE}${imageHashes[id]}-${w}x${h}.png`
     try {
@@ -190,7 +202,7 @@ async function resolveImages(svg: string) {
   }
   if (wanted.size) {
     const missing = [...wanted]
-    const pngs = await run({ kind: "scale", items: missing.map(([, v]) => ({ src: imageSources[v.id], w: v.w, h: v.h })) })
+    const { pngs = [] } = await run({ kind: "scale", items: missing.map(([, v]) => ({ src: imageSources[v.id], w: v.w, h: v.h })) })
     try { mkdirSync(IMAGE_CACHE, { recursive: true }) } catch { /* memory cache still works */ }
     missing.forEach(([key, v], i) => {
       const png = Buffer.from(pngs[i])
@@ -199,32 +211,43 @@ async function resolveImages(svg: string) {
     })
   }
   return svg.replace(IMAGE_TAG, (_m, x, y, w, h, id) => {
-    const key = `${id}:${Math.max(1, Math.round(Number(w) * RENDER_ZOOM))}x${Math.max(1, Math.round(Number(h) * RENDER_ZOOM))}`
-    const uri = scaledImages.get(key) ?? imageSources[Number(id)]
+    const uri = scaledImages.get(`${id}:${pixels(w, zoom)}x${pixels(h, zoom)}`) ?? imageSources[Number(id)]
     return `<image x="${x}" y="${y}" width="${w}" height="${h}" preserveAspectRatio="none" href="${uri}"/>`
   })
 }
-function withGlyphs(svg: string) {
+export function withGlyphs(svg: string) {
   const ids = new Set<string>()
   for (const m of svg.matchAll(/<use href="#(g\d+)"/g)) ids.add(m[1])
   const defs = [...ids].map(id => `<path id="${id}" d="${glyphPaths.get(id)}"/>`).join("")
   return svg.replace(/<svg[^>]*>/, open => `${open}<defs>${defs}</defs>`)
 }
 
-// Identical requests (same scores, same profile) reuse the finished PNG instead of rendering again.
+async function rasterize(svg: string, zoom: number) {
+  const { raw, width, height } = await run({ kind: "render", svg: await resolveImages(withGlyphs(svg), zoom), zoom })
+  // The canvas is fully covered by the opaque background, so premultiplied RGBA equals straight RGBA here.
+  return sharp(Buffer.from(raw!.buffer, raw!.byteOffset, raw!.byteLength), { raw: { width: width!, height: height!, channels: 4 } })
+    .removeAlpha().webp({ quality: WEBP_QUALITY, effort: 2 }).toBuffer()
+}
+
+// Identical requests (same scores, same profile, same resolution) reuse the finished image instead of rendering again.
 const results = new Map<string, Promise<Buffer>>()
 const RESULT_LIMIT = 6
 let inFlight = 0
-export function renderSvg(svg: string): Promise<Buffer> {
-  const key = createHash("sha1").update(svg).digest("hex")
+let hdTurn: Promise<unknown> = Promise.resolve()
+/** Renders to WebP. `hd` uses HD_ZOOM; those renders are serialized to bound peak memory. */
+export function renderSvg(svg: string, options: { hd?: boolean } = {}): Promise<Buffer> {
+  const zoom = options.hd ? HD_ZOOM : RENDER_ZOOM
+  const key = createHash("sha1").update(`${zoom}\n${svg}`).digest("hex")
   const hit = results.get(key)
   if (hit) { results.delete(key); results.set(key, hit); return hit }
   if (inFlight >= 12) return Promise.reject(new UserError(t("image.queueFull")))
   inFlight++
-  const promise = resolveImages(withGlyphs(svg))
-    .then(ready => run({ kind: "render", svg: ready }))
-    .then(([png]) => Buffer.from(png))
-    .finally(() => { inFlight-- })
+  let promise: Promise<Buffer>
+  if (zoom > RENDER_ZOOM) {
+    promise = hdTurn.then(() => rasterize(svg, zoom))
+    hdTurn = promise.catch(() => undefined)
+  } else promise = rasterize(svg, zoom)
+  promise = promise.finally(() => { inFlight-- })
   results.set(key, promise)
   if (results.size > RESULT_LIMIT) results.delete(results.keys().next().value!)
   promise.catch(() => { if (results.get(key) === promise) results.delete(key) })

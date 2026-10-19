@@ -5,7 +5,7 @@ import type { PlayerProfile } from "../local/profile.js"
 import { asset, picture, text, credit, renderSvg } from "./theme.js"
 import { t } from "../messages.js"
 
-export type B50RenderInput = { title: string; subtitle?: string; accountRating?: number | null; result: B50Result; footerNote?: string; profile?: PlayerProfile; serverLabel?: string; useCnArtwork?: boolean }
+export type B50RenderInput = { title: string; subtitle?: string; accountRating?: number | null; result: B50Result; footerNote?: string; profile?: PlayerProfile; serverLabel?: string; useCnArtwork?: boolean; hd?: boolean }
 function shorten(value: string, max: number) {
   let n = 0, out = ""
   for (const c of value) { n += c.codePointAt(0)! > 255 ? 2 : 1; if (n > max) return out + t("value.ellipsis"); out += c }
@@ -47,7 +47,7 @@ function card(entry: B50Entry, i: number, top: number, jacket: string | null, pc
 }
 
 export async function renderB50(input: B50RenderInput): Promise<Buffer> {
-  return renderSvg(await buildB50Svg(input))
+  return renderSvg(await buildB50Svg(input), { hd: input.hd })
 }
 
 export async function buildB50Svg(input: B50RenderInput): Promise<string> {

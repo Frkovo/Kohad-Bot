@@ -6,7 +6,8 @@ import { t } from "./messages.js"
 import { safeReason } from "./diagnostics.js"
 import { dfCfg, lxUserCfg } from "./provider-config.js"
 import { getDfAccessToken, NotBoundError } from "./df/oauth.js"
-import { fetchMusicCatalog, fetchPlayerRecords, updateRecords } from "./df/client.js"
+import { fetchMusicCatalog, fetchPlayerRecords, updateRecords, type UpdateAuth } from "./df/client.js"
+import { dfImportTokens } from "./df/import-token.js"
 import { buildUploadPlan } from "./df/upload.js"
 import { lxnsBindings } from "./lxns/bindings.js"
 import { buildLxnsUploadPlan } from "./lxns/map.js"
@@ -18,18 +19,26 @@ export type SyncLeg = { status: "ok" | "error" | "skipped"; detail: string }
 export type SyncResult = { df: SyncLeg; lxns: SyncLeg }
 
 async function syncDf(cfg: BotConfig, userId: string, result: MigrateSuccess): Promise<SyncLeg> {
-  const df = dfCfg(cfg)
-  if (!df) return { status: "skipped", detail: t("sync.df.unconfigured") }
+  const df = dfCfg(cfg) // OAuth 旁路时为 null，仅走 Import-Token
+  // 用户自备的旧版 Import-Token 优先；没有且 OAuth 启用才走 OAuth 写入（需 prober.records.write 已审批）
+  const importToken = dfImportTokens.get(userId)?.token
+  if (!df && !importToken) return { status: "skipped", detail: cfg.dfOAuthEnabled ? t("sync.df.unconfigured") : t("sync.df.notBound") }
   try {
-    const auth = await getDfAccessToken(df, userId, "prober.records.write")
-    if (!auth.scope.split(/\s+/).includes("prober.records.write")) return { status: "skipped", detail: t("sync.df.noWrite") }
+    let writeAuth: UpdateAuth
+    if (importToken) {
+      writeAuth = { importToken }
+    } else {
+      const auth = await getDfAccessToken(df!, userId, "prober.records.write")
+      if (!auth.scope.split(/\s+/).includes("prober.records.write")) return { status: "skipped", detail: t("sync.df.noWrite") }
+      writeAuth = { token: auth.token }
+    }
     const plan = buildUploadPlan(result.data.pull, await fetchMusicCatalog())
     if (!plan.mapped) return { status: "skipped", detail: t("sync.noRecords", { skipped: plan.total }) }
-    const uploaded = await updateRecords(plan.records, { token: auth.token })
+    const uploaded = await updateRecords(plan.records, writeAuth)
     if (!uploaded.ok) return { status: "error", detail: uploaded.message }
     let verification: string
     try {
-      const records = await fetchPlayerRecords((await getDfAccessToken(df, userId, "prober.records.read")).token)
+      const records = await fetchPlayerRecords(importToken ? { importToken } : (await getDfAccessToken(df!, userId, "prober.records.read")).token)
       const check = verifyDfRecords(plan.records, records)
       verification = t("sync.verify", { mode: t("sync.mode.full"), verified: check.verified, total: check.total, tail: check.verified < check.total ? t("sync.verify.partial") : t("sync.verify.ok") })
     } catch { verification = t("sync.verifyUnavailable") }

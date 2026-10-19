@@ -1,7 +1,7 @@
 import { load } from "cheerio"
 import { CookieJar } from "tough-cookie"
 import { createHash } from "node:crypto"
-import { UserError, HttpStatusError, type Credentials, type ScoreRecord, type Snapshot } from "./registry.js"
+import { UserError, HttpStatusError, NetMaintenanceError, type Credentials, type ScoreRecord, type Snapshot } from "./registry.js"
 import { t } from "../messages.js"
 import { debugLogPath, safeRoute, type SafeMeta, type Trace } from "../diagnostics.js"
 import { writeFileSync } from "node:fs"
@@ -57,7 +57,7 @@ export type ParseStats = { nodes: number; noTitle: number; noScore: number; unpl
 export function parseMusicPage(html: string, expectedLevel: number, stats?: ParseStats): ScoreRecord[] {
   const $ = load(html)
   if ($('[name="password"]').length) throw new UserError(t("net.sessionExpired"))
-  if (/maintenance|メンテナンス|系统维护/i.test($("title").text()) || $(".maintenance").length) throw new UserError(t("net.maintenance"))
+  if (/maintenance|メンテナンス|系统维护/i.test($("title").text()) || $(".maintenance").length) throw new NetMaintenanceError()
   const nodes = $(".w_450.m_15.p_r.f_0")
   if (!nodes.length && $(".music_name_block").length) throw new UserError(t("net.containerChanged"))
   if (!nodes.length && !$("[name=genre], img[src*=btn_music], .music_name_block").length) throw new UserError(t("net.structureUnknown"))
@@ -142,7 +142,7 @@ export class NetClient {
         destination = next; continue
       }
       if (response.status >= 400) throw new HttpStatusError(response.status)
-      if (/maintenance|メンテナンス/.test(load(html)("title").text().toLowerCase())) throw new UserError(t("net.maintenance"))
+      if (/maintenance|メンテナンス/.test(load(html)("title").text().toLowerCase())) throw new NetMaintenanceError()
       this.trace?.note("page-shape", pageShape(html))
       return { html, url: destination.href, status: response.status, location }
     }
@@ -197,8 +197,8 @@ export class NetClient {
     let profile
     try { profile = await this.select(index) }
     catch (error) {
-      // Only session-type failures re-login. Network, TLS, DNS and HTTP status errors are surfaced without another login.
-      if (!(error instanceof UserError) || error instanceof HttpStatusError) throw error
+      // Only session-type failures re-login. Network, TLS, DNS, HTTP status and maintenance errors are surfaced without another login.
+      if (!(error instanceof UserError) || error instanceof HttpStatusError || error instanceof NetMaintenanceError) throw error
       this.trace?.note("relogin")
       const cards = await this.start(auth)
       if (!cards.some(card => card.index === index)) throw new UserError(t("net.cardUnavailable"))

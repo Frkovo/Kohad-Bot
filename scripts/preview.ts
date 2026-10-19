@@ -22,9 +22,9 @@ for (const mode of ["b50","fitb50","pc50"] as const) {
   const result=computeB50(inputs,charts,{newVersionFrom:25500,versionTo:26000,mode})
   const png=await renderB50({title:"玩家昵称・预览",profile,
     subtitle:"公开曲库 · 演示成绩，非真实玩家",result,footerNote:mode==="fitb50"?"水鱼 fit_diff 原始精度 · 演示数据":mode==="pc50"?"playCount 降序 · 演示数据":"国服 1.56.00 · 演示数据"})
-  writeFileSync(`.data/previews/${mode === "fitb50" ? "nb50" : mode}-preview.png`,png)
+  writeFileSync(`.data/previews/${mode === "fitb50" ? "nb50" : mode}-preview.webp`,png)
   console.log(JSON.stringify({mode,bytes:png.length,charts:result.b35.length+result.b15.length,total:result.total,missing:result.missing,fitMissing:result.fitMissing}))
 }
-writeFileSync(".data/previews/help-preview.png",await renderHelp())
+writeFileSync(".data/previews/help-preview.webp",await renderHelp())
 // Provision the empty persistent schema without saving any synthetic user.
 scoreDatabase().close()

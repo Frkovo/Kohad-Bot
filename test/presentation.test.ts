@@ -79,7 +79,7 @@ test("same user can query three public images concurrently during scan cooldown;
     // A user's scan cooldown must not block querying saved images simultaneously.
     cfg.cooldownMs=30000
     const images=["b50","nb50","pc50"].map(name=>handleB50({ ...interaction, commandName:name,
-      options:{getString:(option:string)=>option==="source"?"local":null},
+      options:{getString:(option:string)=>option==="source"?"local":null,getBoolean:(option:string)=>option==="public"?true:null},
     } as unknown as ChatInputCommandInteraction,cfg,createQueue(1),new Map()))
     await new Promise<void>(resolve=>setImmediate(resolve))
     assert.deepEqual(acknowledgements.splice(0),[{},{},{}])

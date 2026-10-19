@@ -58,6 +58,24 @@ test("sync never occupies the machine-read slot and local commit precedes sync",
   syncGate.resolve(skipped)
   await a
 })
+test("import resolves before prober sync; the user lock holds until sync settles",async()=>{
+  const syncGate=deferred<typeof skipped>(), saved:string[]=[]
+  const read=createImportCoordinator({pull:async()=>result,save:id=>saved.push(id),sync:async()=>syncGate.promise})
+  const queue=createQueue(2,1)
+  const account=await read("a","qr-a",cfg,queue)
+  assert.equal(account.result.ok,true)
+  assert.deepEqual(saved,["a"])
+  // The caller can render B50 now; the sync promise is still pending.
+  let settled=false
+  account.sync!.then(()=>{settled=true})
+  await tick()
+  assert.equal(settled,false)
+  await assert.rejects(read("a","qr-a-2",cfg,queue),ImportBusyError)
+  syncGate.resolve(skipped)
+  assert.deepEqual(await account.sync,skipped)
+  await tick()
+  assert.equal((await read("a","qr-a-3",cfg,queue)).result.ok,true)
+})
 test("queue failure/overflow releases capacity and user locks",async()=>{
   const failed=deferred<MigrateSuccess>()
   let calls=0
@@ -76,7 +94,7 @@ test("DF upload failure cannot block LX upload/readback; requests use per-user b
   clearDfTokenCache()
   const tokenGate=deferred<void>()
   let lxUploads=0, dfUploads=0
-  const settings={...cfg,dfClientId:"fixture-client",dfClientSecret:"fixture-secret",dfAuthUrl:"https://df-auth.fixture",lxDevToken:"fixture-dev-token"}
+  const settings={...cfg,dfOAuthEnabled:true,dfClientId:"fixture-client",dfClientSecret:"fixture-secret",dfAuthUrl:"https://df-auth.fixture",lxDevToken:"fixture-dev-token"}
   t.mock.method(lxnsBindings,"get",id=>id==="sync-user"?{friendCode:"123456789012345",name:"Fixture",method:"friend_code",boundAt:"fixture"}:null)
   t.mock.method(globalThis,"fetch",async(input:unknown, options?:RequestInit)=>{
     const url=String(input)
@@ -106,7 +124,7 @@ test("read-only DF grant is reported and never uploads",async t=>{
     if(String(input).endsWith("/oauth/token"))return Response.json({access_token:"fixture-read",scope:"prober.records.read"})
     writes++;throw new Error("must not upload with read-only grant")
   })
-  const sync=await syncScores({...cfg,dfClientId:"client",dfClientSecret:"secret",dfAuthUrl:"https://df-auth.fixture"},"read-only",result)
+  const sync=await syncScores({...cfg,dfOAuthEnabled:true,dfClientId:"client",dfClientSecret:"secret",dfAuthUrl:"https://df-auth.fixture"},"read-only",result)
   assert.equal(sync.df.status,"skipped")
   assert.match(sync.df.detail,/写入授权/)
   assert.equal(writes,0)
@@ -124,8 +142,8 @@ test("heavy score rasterization does not block a second Discord ACK on the same 
   const help=handleHelp(interaction)
   await tick()
   assert.ok(ackMs<2500,`second command ACK took ${ackMs}ms (includes scheduled 80ms delay)`)
-  const pngs=await Promise.all([imageA,imageB])
-  assert.ok(pngs.every(png=>png.subarray(1,4).toString()==="PNG"))
+  const images=await Promise.all([imageA,imageB])
+  assert.ok(images.every(image=>image.subarray(0,4).toString()==="RIFF"&&image.subarray(8,12).toString()==="WEBP"))
   await help
   t.diagnostic(`Second command ACK: ${Math.round(ackMs)} ms while two B50 images rendered`)
 })

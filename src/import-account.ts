@@ -7,7 +7,8 @@ import { syncScores, type SyncResult } from "./sync.js"
 import { createQueue } from "./queue.js"
 
 type Queue = ReturnType<typeof createQueue>
-export type ImportedAccount = { result: MigrateResult; sync?: SyncResult; reused?: boolean }
+// sync resolves after the local commit; callers decide whether to wait for it (B50 renders without waiting).
+export type ImportedAccount = { result: MigrateResult; sync?: Promise<SyncResult>; reused?: boolean }
 export class ImportBusyError extends Error {}
 export class ImportQueueFullError extends Error {}
 type Dependencies = { pull: typeof pullAccount; save: (userId: string, result: Extract<MigrateResult, {ok:true}>) => unknown; sync: typeof syncScores }
@@ -36,14 +37,22 @@ export function createImportCoordinator(dependencies: Dependencies) {
     lastScan.set(userId, Date.now())
     const entry = { owner: userId, at: Date.now(), done: false, task: null as unknown as Promise<ImportedAccount> }
     entry.task = (async () => {
+      let syncing = false
       try {
         const result = await pull
         if (!result.ok) return { result }
         dependencies.save(userId, result)
         // QR failures or a failed prober must never roll back the saved scores.
         await progress?.(t("import.saved"))?.catch(() => undefined)
-        return { result, sync: await dependencies.sync(cfg, userId, result) }
-      } finally { users.delete(userId); entry.done = true; entry.at = Date.now() }
+        // Prober sync is detached: the user lock stays held until it settles, so two syncs never overlap for one user.
+        const sync = dependencies.sync(cfg, userId, result)
+        sync.finally(() => users.delete(userId)).catch(() => undefined)
+        syncing = true
+        return { result, sync }
+      } finally {
+        if (!syncing) users.delete(userId)
+        entry.done = true; entry.at = Date.now()
+      }
     })()
     scans.set(key, entry)
     if (scans.size > 100) for (const [hash, scan] of scans) { if (scan.done) scans.delete(hash); if (scans.size <= 100) break }
