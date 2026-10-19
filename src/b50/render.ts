@@ -47,6 +47,10 @@ function card(entry: B50Entry, i: number, top: number, jacket: string | null, pc
 }
 
 export async function renderB50(input: B50RenderInput): Promise<Buffer> {
+  return renderSvg(await buildB50Svg(input))
+}
+
+export async function buildB50Svg(input: B50RenderInput): Promise<string> {
   const { result } = input
   const entries = [...result.b35, ...result.b15]
   const [jackets, icon, plate, netJackets] = await Promise.all([
@@ -85,6 +89,5 @@ export async function renderB50(input: B50RenderInput): Promise<Buffer> {
   result.b35.forEach((e, i) => { svg += card(e, i, 235, jacket(e), pc, input.useCnArtwork === false) })
   result.b15.forEach((e, i) => { svg += card(e, i, 1085, jacket(e), pc, input.useCnArtwork === false) })
   svg += credit()
-  svg += "</svg>"
-  return renderSvg(svg)
+  return svg + "</svg>"
 }
