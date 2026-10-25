@@ -1,19 +1,21 @@
 import assert from "node:assert/strict"
 import test from "node:test"
-import { mkdtempSync, rmSync } from "node:fs"
-import { tmpdir } from "node:os"
-import path from "node:path"
 import { MessageFlags, type ChatInputCommandInteraction } from "discord.js"
 import { normalizeSgwc, isSgwcFormat } from "../src/util.js"
-import { normalizeSgwc as serverNormalize, buildMigrationPayload } from "../../server/src/migrate-core.js"
 import { extractPlayerProfile, lxPlayerProfile } from "../src/local/profile.js"
 import type { MigrateSuccess } from "../src/migrate-client.js"
 import { handleB50, handleHelp } from "../src/handlers.js"
 import { createQueue } from "../src/queue.js"
-import { scoreDatabase } from "../src/local/database.js"
-import { closeServerStore } from "../src/multiserver/store.js"
+import { closeAppStore, openTestStore } from "./helpers.js"
 import type { BotConfig } from "../src/config.js"
 import { COMMANDS_JSON } from "../src/commands.js"
+
+// The :8788 migration service is a separate deployment. When its sources sit next to this project (developer
+// workspace) the QR parser parity is asserted; in a standalone checkout those cases are skipped.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type MigrationCore = { normalizeSgwc(raw: string): string; buildMigrationPayload: (input: any) => any }
+const migrationCore = await import("../../server/src/migrate-core.js").catch(() => null) as MigrationCore | null
+const serverNormalize = migrationCore?.normalizeSgwc
 
 const canonical = `SGWCMAID261008043342${"A1".repeat(32)}`
 const short = canonical.slice(4)
@@ -23,14 +25,14 @@ test("all QR input forms normalize identically in bot and migration API without 
   t.mock.method(globalThis,"fetch",()=>{throw new Error("QR URL must not be fetched")})
   for (const raw of [canonical,short,canonical.slice(8),short.toLowerCase(),`  ${link}  `,`<${link}>`,`[扫码链接](${link.replaceAll("&","\\&")})`]) {
     assert.equal(normalizeSgwc(raw),canonical)
-    assert.equal(serverNormalize(raw),canonical)
+    if (serverNormalize) assert.equal(serverNormalize(raw),canonical)
     assert.equal(isSgwcFormat(normalizeSgwc(raw)),true)
   }
 })
 test("QR parsing rejects unrelated hosts, malformed payloads and query-only code",()=>{
   for (const raw of [link.replace("wq.wahlap.net","example.test"),link.replace("wq.wahlap.net","wq.wahlap.net.example.test"),link.replace(short,short.slice(0,-1)),`https://wq.wahlap.net/?code=${short}`,link.replace("A1A1","ZZZZ"),"MAID261008043342"]){
     assert.equal(isSgwcFormat(normalizeSgwc(raw)),false)
-    assert.equal(isSgwcFormat(serverNormalize(raw)),false)
+    if (serverNormalize) assert.equal(isSgwcFormat(serverNormalize(raw)),false)
   }
 })
 test("active UserDetail plateId wins, invalid aliases don't hide valid plate and source preview is a fallback",()=>{
@@ -49,15 +51,16 @@ test("LX player name_plate fills missing local art without overriding imported c
   assert.equal(lxPlayerProfile(player,{name:"Game"}).iconId,200201)
 })
 test("migration preserves preview collection IDs when detail data is unavailable",()=>{
-  const pull={userId:1,loginId:"must-strip",userData:null,itemKinds:{},itemFlat:[],music:{userMusicList:[]}} as Parameters<typeof buildMigrationPayload>[0]["pull"]
-  const result=buildMigrationPayload({pull,session:{base:"https://fixture.test",preview:{userName:"Tester",nameplateId:550201,iconId:550201,playerRating:15000,token:"must-not-save"}}})
+  // Only runs where the :8788 service sources are checked out next to the bot.
+  if (!migrationCore) return
+  const pull={userId:1,loginId:"must-strip",userData:null,itemKinds:{},itemFlat:[],music:{userMusicList:[]}} as Parameters<MigrationCore["buildMigrationPayload"]>[0]["pull"]
+  const result=migrationCore.buildMigrationPayload({pull,session:{base:"https://fixture.test",preview:{userName:"Tester",nameplateId:550201,iconId:550201,playerRating:15000,token:"must-not-save"}}})
   assert.equal(result.source.nameplateId,550201)
   assert.equal(result.source.iconId,550201)
   assert.equal(JSON.stringify(result.source).includes("must-not-save"),false)
 })
 test("same user can query three public images concurrently during scan cooldown; upload is private and accepts linked QR",async t=>{
-  const folder=mkdtempSync(path.join(tmpdir(),"kohad-public-"))
-  process.env.LOCAL_SCORE_DB=path.join(folder,"scores.sqlite")
+  await openTestStore()
   const cfg={allowedUserIds:new Set(),cooldownMs:0,ephemeral:true,migrateUrl:"https://migrate.fixture",migrateApiKey:"fixture",callTimeoutMs:5000,b50NewVersion:25500,lxApiBase:"https://lx.fixture"} as BotConfig
   let posted=""
   t.mock.method(globalThis,"fetch",async(url:unknown, options?:RequestInit)=>{
@@ -93,5 +96,5 @@ test("same user can query three public images concurrently during scan cooldown;
     assert.equal(COMMANDS_JSON.some(c=>c.name==="nb50"),true)
     assert.equal(COMMANDS_JSON.some(c=>["import","fitb50"].includes(c.name)),false)
     for(const c of COMMANDS_JSON)for(const o of c.options??[])if(o.name==="sgwcmaid")assert.ok("max_length" in o&&Number(o.max_length)>=link.length)
-  } finally {closeServerStore();scoreDatabase().close();delete process.env.LOCAL_SCORE_DB;rmSync(folder,{recursive:true,force:true})}
+  } finally {await closeAppStore()}
 })

@@ -49,7 +49,7 @@ async function report(interaction: ReplyInteraction, trace: Trace, error: unknow
     }
   } catch (replyError) { trace.note("reply-failed", classifyError(replyError)) }
 }
-function selectedServer(interaction: ChatInputCommandInteraction) { return resolveServer(interaction.options.getString("server"), serverStore().preferred(interaction.user.id)) }
+function selectedServer(interaction: ChatInputCommandInteraction) { return serverStore().preferred(interaction.user.id).then(saved => resolveServer(interaction.options.getString("server"), saved)) }
 function modal(server: ServerId) {
   requireEnabledServer(server)
   const form = new ModalBuilder().setCustomId(`ms:credentials:${server}`).setTitle(t("bind.modalTitle", { server: SERVER_NAMES[server] }))
@@ -65,18 +65,18 @@ export async function handleServerCommand(interaction: ChatInputCommandInteracti
   try {
     checkAccess(interaction.user.id, cfg.allowedUserIds)
     trace.step("binding.read")
-    const store = serverStore(), server = selectedServer(interaction), name = interaction.commandName
+    const store = serverStore(), server = await selectedServer(interaction), name = interaction.commandName
     trace.server = server
     if (name === "server") {
-      if (interaction.options.getString("server")) store.setPreferred(interaction.user.id, server)
-      const saved = store.savedPreferred(interaction.user.id)
+      if (interaction.options.getString("server")) await store.setPreferred(interaction.user.id, server)
+      const saved = await store.savedPreferred(interaction.user.id)
       await interaction.reply({ content: saved ? t("bind.defaultServer", { server: SERVER_NAMES[saved] }) : t("bind.defaultServerUnset"), flags: MessageFlags.Ephemeral }); return
     }
     if (name === "bind" || (name === "sync" && server === "cn")) { await interaction.showModal(modal(server)); return }
     if (name === "unbind") {
       if (server === "cn") { await interaction.reply({ content: t("bind.cnUnbindHint"), flags: MessageFlags.Ephemeral }); return }
       await interaction.reply({ content: t("bind.unbindConfirm", { server: SERVER_NAMES[server] }), flags: MessageFlags.Ephemeral,
-        components: [new ActionRowBuilder<ButtonBuilder>().addComponents(button(`ms:unbind:${server}:${store.binding(interaction.user.id, server)?.revision ?? 0}`, t("bind.unbindButton"), ButtonStyle.Danger))] }); return
+        components: [new ActionRowBuilder<ButtonBuilder>().addComponents(button(`ms:unbind:${server}:${(await store.binding(interaction.user.id, server))?.revision ?? 0}`, t("bind.unbindButton"), ButtonStyle.Danger))] }); return
     }
     if (name === "sync") {
       await interaction.deferReply({ flags: MessageFlags.Ephemeral })
@@ -104,8 +104,8 @@ export async function runRemoteB50(interaction: ReplyInteraction, cfg: BotConfig
     if (mode === "fitb50") throw new UserError(t("b50.fitUnsupported"))
     if (mode === "pc50" && ["jp", "intl"].includes(server)) throw new UserError(t("b50.pc50Unsupported"))
     trace.step("binding.read")
-    const store = serverStore(), binding = store.binding(interaction.user.id, server)
-    let snapshot = store.snapshot(interaction.user.id, server)
+    const store = serverStore(), binding = await store.binding(interaction.user.id, server)
+    let snapshot = await store.snapshot(interaction.user.id, server)
     if (!snapshot && !binding?.bound) {
       await interaction.reply({ content: t("b50.unbound", { server: SERVER_NAMES[server] }), flags: MessageFlags.Ephemeral, components: [bindRow(server)] }); return
     }
@@ -117,7 +117,7 @@ export async function runRemoteB50(interaction: ReplyInteraction, cfg: BotConfig
     if (source !== "local" && refreshOption !== false && (refresh || !snapshot) && binding?.bound) {
       try { snapshot = await syncRemote(interaction.user.id, server, undefined, trace) }
       catch (error) {
-        if (snapshot && store.binding(interaction.user.id, server)?.accountKey !== snapshot.accountKey) throw new UserError(t("b50.accountChangedSync"))
+        if (snapshot && (await store.binding(interaction.user.id, server))?.accountKey !== snapshot.accountKey) throw new UserError(t("b50.accountChangedSync"))
         // NET maintenance is expected daily: show the last successful snapshot and say so, rather than failing the command.
         if (!snapshot || !(error instanceof NetMaintenanceError)) throw error
         trace.note("cache-fallback")
@@ -131,7 +131,7 @@ export async function runRemoteB50(interaction: ReplyInteraction, cfg: BotConfig
     trace.step("image.render")
     const image = await renderB50({ hd: req.hd, title: snapshot.profile.name, profile: snapshot.profile, accountRating: snapshot.profile.rating, result: calculated.result,
       subtitle, serverLabel: SERVER_BADGE[server], useCnArtwork: false, footerNote: t("b50.footer", { version: calculated.version, note: calculated.note }) })
-    if (store.binding(interaction.user.id, server)?.accountKey !== snapshot.accountKey) throw new UserError(t("b50.accountChangedRender"))
+    if ((await store.binding(interaction.user.id, server))?.accountKey !== snapshot.accountKey) throw new UserError(t("b50.accountChangedRender"))
     trace.step("reply")
     const pc = mode === "pc50", modeLabel = pc ? t("label.pc50") : t("label.b50")
     const embed = new EmbedBuilder().setTitle(t("b50.embedTitle", { server: SERVER_NAMES[server], mode: modeLabel, name: snapshot.profile.name })).setColor(0x7c81ff)
@@ -162,7 +162,7 @@ export async function handleServerModal(interaction: ModalSubmitInteraction, cfg
       await interaction.editReply({ content: t("bind.cnDone") }); trace.note("complete"); return
     }
     trace.step("binding.read")
-    const revision = serverStore().binding(interaction.user.id, server)?.revision ?? 0
+    const revision = (await serverStore().binding(interaction.user.id, server))?.revision ?? 0
     if (server === "jp" || server === "intl") {
       const auth = { username: interaction.fields.getTextInputValue("username").trim(), password: interaction.fields.getTextInputValue("password") }
       const client = new NetClient(server, undefined, undefined, trace), cards = await client.start(auth)
@@ -222,10 +222,10 @@ export async function handleServerButton(interaction: ButtonInteraction, cfg: Bo
       trace.server = id
       trace.step("binding.read")
       const store = serverStore()
-      if ((store.binding(interaction.user.id, id)?.revision ?? 0) !== Number(revision)) throw new UserError(t("interaction.unbindChanged"))
+      if (((await store.binding(interaction.user.id, id))?.revision ?? 0) !== Number(revision)) throw new UserError(t("interaction.unbindChanged"))
       // Confirmation messages are ephemeral; also bind future shared-message buttons to their owner.
       if (interaction.message.interactionMetadata?.user.id && interaction.message.interactionMetadata.user.id !== interaction.user.id) throw new UserError(t("interaction.notOwner"))
-      cancelSync(interaction.user.id, id); store.unbind(interaction.user.id, id)
+      cancelSync(interaction.user.id, id); await store.unbind(interaction.user.id, id)
       for (const [nonce, entry] of pending) if (entry.user === interaction.user.id && entry.server === id) clearPending(nonce)
       await interaction.reply({ content: t("bind.unbindDone", { server: SERVER_NAMES[id] }), flags: MessageFlags.Ephemeral })
       trace.note("complete"); return
@@ -249,11 +249,11 @@ export async function handleServerButton(interaction: ButtonInteraction, cfg: Bo
       getPending(id, interaction.user.id)
       cancelSync(entry.user, entry.server)
       trace.step("credentials.save")
-      const store = serverStore(), newRevision = store.bind(entry.user, entry.server, key, name, entry.auth, entry.revision)
+      const store = serverStore(), newRevision = await store.bind(entry.user, entry.server, key, name, entry.auth, entry.revision)
       clearPending(id)
       if (snapshot) {
         trace.step("snapshot.save")
-        store.save(entry.user, entry.server, newRevision, snapshot)
+        await store.save(entry.user, entry.server, newRevision, snapshot)
         await interaction.editReply({ content: t("bind.done", { server: SERVER_NAMES[entry.server], count: snapshot.records.length }) })
         trace.note("complete"); return
       }

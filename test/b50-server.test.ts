@@ -1,25 +1,18 @@
 import assert from "node:assert/strict"
 import test, { after } from "node:test"
-import { randomBytes } from "node:crypto"
-import { mkdtempSync, rmSync } from "node:fs"
-import { tmpdir } from "node:os"
-import path from "node:path"
 import { MessageFlags, type ChatInputCommandInteraction, type StringSelectMenuInteraction } from "discord.js"
 import { resolveB50Server, UserError } from "../src/multiserver/registry.js"
-import { closeServerStore, serverStore } from "../src/multiserver/store.js"
+import { serverStore } from "../src/multiserver/store.js"
 import { dataServersFor, resolveB50Query, type B50Request, type DataSources } from "../src/multiserver/b50-query.js"
 import { handleServerCommand } from "../src/multiserver/interactions.js"
 import { handleB50, handleB50Pick } from "../src/handlers.js"
-import { closeScoreDatabase } from "../src/local/database.js"
 import { createQueue } from "../src/queue.js"
+import { closeAppStore, openTestStore } from "./helpers.js"
 import type { BotConfig } from "../src/config.js"
 
-// One scratch database for the file: the score database is a process-wide singleton, so it cannot change per test.
-const folder = mkdtempSync(path.join(tmpdir(), "kohad-b50-server-"))
-process.env.LOCAL_SCORE_DB = path.join(folder, "scores.sqlite")
-process.env.B50_AUTH_KEY = randomBytes(32).toString("base64")
-delete process.env.B50_AUTH_KEY_FILE
-after(() => { closeServerStore(); closeScoreDatabase(); rmSync(folder, { recursive: true, force: true }) })
+// One in-memory store for the file: the store is a process-wide singleton, so it cannot change per test.
+await openTestStore()
+after(() => closeAppStore())
 
 const cfg = { allowedUserIds: new Set<string>(), maxPendingReads: 9, pullConcurrency: 3 } as BotConfig
 
@@ -68,39 +61,39 @@ test("resolveB50Server: explicit beats saved beats the single data server; other
   assert.throws(() => resolveB50Server("missless", null, []), /旁路/)
 })
 
-test("store: saved default is null until chosen; only live bindings count as servers in use", () => {
+test("store: saved default is null until chosen; only live bindings count as servers in use", async () => {
   const store = serverStore(), user = "b50-store-user", auth = { username: "fixture-user", password: "fixture-pass" }
-  assert.equal(store.savedPreferred(user), null)
-  store.setPreferred(user, "intl")
-  assert.equal(store.savedPreferred(user), "intl")
-  store.bind(user, "jp", "jp-account", "JP Player", auth)
-  store.bind(user, "intl", "intl-account", "Intl Player", auth)
-  assert.deepEqual(store.boundServers(user).sort(), ["intl", "jp"])
-  store.unbind(user, "jp")
-  assert.deepEqual(store.boundServers(user), ["intl"])
+  assert.equal(await store.savedPreferred(user), null)
+  await store.setPreferred(user, "intl")
+  assert.equal(await store.savedPreferred(user), "intl")
+  await store.bind(user, "jp", "jp-account", "JP Player", auth)
+  await store.bind(user, "intl", "intl-account", "Intl Player", auth)
+  assert.deepEqual((await store.boundServers(user)).sort(), ["intl", "jp"])
+  await store.unbind(user, "jp")
+  assert.deepEqual(await store.boundServers(user), ["intl"])
 })
 
-test("dataServersFor: cn data from an import or a 水鱼/落雪 binding; bypassed servers never count", () => {
-  const sources: DataSources = { cnData: id => id === "b50-cn", remoteBound: id => id === "b50-cn" ? ["missless", "jp"] : [] }
-  assert.deepEqual(dataServersFor("b50-cn", sources), ["cn", "jp"])
-  assert.deepEqual(dataServersFor("b50-none", sources), [])
+test("dataServersFor: cn data from an import or a 水鱼/落雪 binding; bypassed servers never count", async () => {
+  const sources: DataSources = { cnData: async id => id === "b50-cn", remoteBound: async id => id === "b50-cn" ? ["missless", "jp"] : [] }
+  assert.deepEqual(await dataServersFor("b50-cn", sources), ["cn", "jp"])
+  assert.deepEqual(await dataServersFor("b50-none", sources), [])
 })
 
-test("resolveB50Query: manual choice > cn-only inputs > saved default > single data server", () => {
+test("resolveB50Query: manual choice > cn-only inputs > saved default > single data server", async () => {
   const store = serverStore(), user = "b50-rule-user"
   const req = (over: Partial<B50Request> = {}): B50Request => ({ userId: user, commandName: "b50", explicit: null, sgwcmaid: null, source: null, refresh: null, public: false, hd: false, ...over })
-  const oneRemote: DataSources = { cnData: () => false, remoteBound: () => ["intl"] }
-  const cnAndJp: DataSources = { cnData: () => true, remoteBound: () => ["jp"] }
+  const oneRemote: DataSources = { cnData: async () => false, remoteBound: async () => ["intl"] }
+  const cnAndJp: DataSources = { cnData: async () => true, remoteBound: async () => ["jp"] }
 
-  assert.deepEqual(resolveB50Query(req({ explicit: "jp" }), oneRemote), { server: "jp", fromData: false })
-  assert.deepEqual(resolveB50Query(req(), oneRemote), { server: "intl", fromData: true })
-  assert.deepEqual(resolveB50Query(req({ sgwcmaid: "fixture-qr" }), oneRemote), { server: "cn", fromData: false })
-  assert.deepEqual(resolveB50Query(req({ source: "lxns" }), oneRemote), { server: "cn", fromData: false })
-  assert.equal(resolveB50Query(req(), cnAndJp), null)
+  assert.deepEqual(await resolveB50Query(req({ explicit: "jp" }), oneRemote), { server: "jp", fromData: false })
+  assert.deepEqual(await resolveB50Query(req(), oneRemote), { server: "intl", fromData: true })
+  assert.deepEqual(await resolveB50Query(req({ sgwcmaid: "fixture-qr" }), oneRemote), { server: "cn", fromData: false })
+  assert.deepEqual(await resolveB50Query(req({ source: "lxns" }), oneRemote), { server: "cn", fromData: false })
+  assert.equal(await resolveB50Query(req(), cnAndJp), null)
 
-  store.setPreferred(user, "jp")
-  assert.deepEqual(resolveB50Query(req(), cnAndJp), { server: "jp", fromData: false })
-  assert.deepEqual(resolveB50Query(req({ sgwcmaid: "fixture-qr" }), cnAndJp), { server: "cn", fromData: false })
+  await store.setPreferred(user, "jp")
+  assert.deepEqual(await resolveB50Query(req(), cnAndJp), { server: "jp", fromData: false })
+  assert.deepEqual(await resolveB50Query(req({ sgwcmaid: "fixture-qr" }), cnAndJp), { server: "cn", fromData: false })
 })
 
 test("/server reports an unset default instead of implying cn", async () => {
@@ -116,7 +109,7 @@ test("/server reports an unset default instead of implying cn", async () => {
 
 test("a saved /server default skips the prompt", async () => {
   const user = "b50-saved-user"
-  serverStore().setPreferred(user, "intl")
+  await serverStore().setPreferred(user, "intl")
   const query = interaction("b50", {}, user)
   await handleB50(query.command, cfg, createQueue(1), new Map())
   assert.equal(query.messages.length, 1)
@@ -136,14 +129,14 @@ test("/b50 with no manual choice and no single server asks privately; the pick s
 
   const pick = pickInteraction(menu.custom_id, "intl", user)
   await handleB50Pick(pick.command, cfg, createQueue(1))
-  assert.equal(serverStore().savedPreferred(user), "intl")
+  assert.equal(await serverStore().savedPreferred(user), "intl")
   assert.match(pick.messages[0].content, /尚未绑定国际服/)
 
   // Single use: the same menu cannot be answered twice, and a second answer changes nothing.
   const again = pickInteraction(menu.custom_id, "jp", user)
   await handleB50Pick(again.command, cfg, createQueue(1))
   assert.match(again.messages[0].content, /已过期或不属于你/)
-  assert.equal(serverStore().savedPreferred(user), "intl")
+  assert.equal(await serverStore().savedPreferred(user), "intl")
 })
 
 test("a server pick belongs to the player who was asked", async () => {
@@ -155,11 +148,11 @@ test("a server pick belongs to the player who was asked", async () => {
   const intruder = pickInteraction(menu.custom_id, "jp", stranger)
   await handleB50Pick(intruder.command, cfg, createQueue(1))
   assert.match(intruder.messages[0].content, /已过期或不属于你/)
-  assert.equal(serverStore().savedPreferred(stranger), null)
+  assert.equal(await serverStore().savedPreferred(stranger), null)
 
   // A rejected stranger does not consume the owner's pick.
   const ownerPick = pickInteraction(menu.custom_id, "jp", owner)
   await handleB50Pick(ownerPick.command, cfg, createQueue(1))
   assert.match(ownerPick.messages[0].content, /尚未绑定日服/)
-  assert.equal(serverStore().savedPreferred(owner), "jp")
+  assert.equal(await serverStore().savedPreferred(owner), "jp")
 })

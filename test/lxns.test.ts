@@ -1,13 +1,10 @@
 import assert from "node:assert/strict"
 import test from "node:test"
-import fs from "node:fs"
-import os from "node:os"
-import path from "node:path"
 
 import { buildLxnsUploadPlan, buildChartPresence } from "../src/lxns/map.js"
 import { lxnsBestsToB50 } from "../src/lxns/bests.js"
-import { createLxnsBindingStore } from "../src/lxns/bindings.js"
 import { buildChartIndex } from "../src/b50/compute.js"
+import { createMemoryProviderStores } from "../src/store/memory.js"
 import type { LxnsSong } from "../src/b50/songs.js"
 
 const songs: LxnsSong[] = [
@@ -106,17 +103,13 @@ test("lxnsBestsToB50 maps by Score.type (standard array can contain dx charts)",
   assert.equal(stdEntry?.ra, 280)
 })
 
-test("lxns binding store persists atomically", () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "lxns-bind-"))
-  const file = path.join(dir, "bindings.json")
-  const store = createLxnsBindingStore(file)
-  assert.equal(store.get("u1"), null)
-  const binding = { friendCode: 123456789012345, name: "Tester", boundAt: "2026-10-08T00:00:00.000Z", method: "friend_code" as const }
-  store.set("u1", binding)
-  assert.equal(store.size(), 1)
-  const store2 = createLxnsBindingStore(file) // 重新加载（验证落盘）
-  assert.deepEqual(store2.get("u1"), binding)
-  assert.equal(store2.remove("u1"), true)
-  assert.equal(store2.get("u1"), null)
-  fs.rmSync(dir, { recursive: true, force: true })
+test("lxns binding store keeps friend code digit strings and OAuth tokens", async () => {
+  const store = createMemoryProviderStores().lxns
+  assert.equal(await store.get("u1"), null)
+  const binding = { friendCode: "123456789012345", name: "Tester", boundAt: "2026-10-08T00:00:00.000Z", method: "friend_code" as const }
+  await store.set("u1", binding)
+  assert.equal(await store.size(), 1)
+  assert.deepEqual(await store.get("u1"), binding)
+  assert.equal(await store.remove("u1"), true)
+  assert.equal(await store.get("u1"), null)
 })

@@ -63,7 +63,7 @@ Discord 原生 TextInput 没有密码遮罩功能（只有 Short / Paragraph 两
 
 JP / 国际服请求使用随 Bot 内置的两张公开中间证书（provenance 见 `assets/certs/PROVENANCE.md`），仅作用于 NET 专用 Agent；证书校验保持开启，不会关闭 TLS，也不会修改系统信任库。HTTP 状态错误（如 503）只显示状态码，不会触发重新登录。
 
-失败时回复中的排查编号与 `.data/logs/bot-debug.jsonl` 中的 `id` 一致。日志只含阶段、状态码、耗时、计数和固定路由名，单文件 5 MB 后轮转为一个 `.1` 备份；`B50_DEBUG_LOG=off` 可关闭文件日志，或指定其他路径。所有回复文案来自根目录 `keys.json`，修改后需重启 Bot（不会自动重启）。详见 README“排障日志与文案”。
+失败时回复中的排查编号与 `B50_DATA_DIR/logs/bot-debug.jsonl` 中的 `id` 一致。日志只含阶段、状态码、耗时、计数和固定路由名，单文件 5 MB 后轮转为一个 `.1` 备份；`B50_DEBUG_LOG=off` 可关闭文件日志，或指定其他路径。所有回复文案来自根目录 `keys.json`，修改后需重启 Bot（不会自动重启）。详见 README“排障日志与文案”。
 
 每次同步请求 genre=99&diff=0..4 的完整最佳成绩页，解析达成率、DX 分数、SD/DX 类型及 FC/FS 标记。宴谱不参与官方服 B50。读取任一页失败、维护、重定向到登录或页面结构异常时，不提交部分快照，不覆盖旧成绩。
 
@@ -90,13 +90,13 @@ NET_JP_VERSION、NET_INTL_VERSION 可分别固定实际版本，名称必须匹�
 
 ## 存储与加密
 
-原有 accounts / scores 保留为国服数据。增加同一 SQLite 中的 server_preferences / server_bindings / server_snapshots；远程绑定和快照主键包含 Discord user ID 与 server。
+原有 accounts / scores 保留为国服数据。增加同一 MySQL 数据库中的 server_preferences / server_bindings / server_snapshots；远程绑定和快照主键包含 Discord user ID 与 server。
 
 登录信息使用 AES-256-GCM，每次随机 IV；用户、服务器和绑定 revision 作为附加认证数据，防止密文在不同绑定间被替换。快照仅保存计算需要的字段，不保存原始 HTML、二维码或私服原始响应。绑定到另一账户时仅清除该用户该服旧快照，保留其他服的数据。
 
-优先使用 B50_AUTH_KEY（32 字节的 Base64）；否则读取 B50_AUTH_KEY_FILE，未指定时首次绑定自动创建数据库同目录的 binding-master.key。发现已有加密凭据而原密钥文件缺失时，不自动生成替代密钥。
+优先使用 B50_AUTH_KEY（32 字节的 Base64）；否则读取 B50_AUTH_KEY_FILE，未指定时首次绑定自动创建 B50_DATA_DIR 下的 binding-master.key。发现已有加密凭据而原密钥文件缺失时，不自动生成替代密钥。
 
-备份时停止 Bot 并复制 SQLite、WAL 所需文件及原密钥；密钥和 .data 不进入版本管理。移机必须保留原密钥。解绑逻辑删除当前凭据并保留成绩；历史备份和 SQLite 的历史页面不在此逻辑的物理擦除范围内。
+备份时用 mysqldump 导出数据库并单独保存原密钥；密钥和 .data 不进入版本管理。移机必须保留原密钥。解绑逻辑删除当前凭据并保留成绩；历史备份中的记录不在此逻辑的物理擦除范围内。
 
 ## 私服适配接口契约（延期保留，当前不启用）
 
@@ -154,6 +154,6 @@ npm test
 npm run preview:multiserver
 ```
 
-预览只使用公开曲库与演示成绩，输出 .data/previews/intl-b50-preview.png 和 help-preview.png，不登录、不连接 Discord，也不写入玩家数据库。
+预览只使用公开曲库与演示成绩，输出 B50_DATA_DIR 下的 intl-b50-preview.png 和 help-preview.png，不登录、不连接 Discord，也不写入玩家数据库。
 
 Bot 启动后差量注册 13 个命令，所有 server 选项仅包含 cn / jp / intl。代码通过构建／模拟测试不代表真实登录和手机交互验收已完成。启用前需要真实 JP/国际服账号验证选卡与额外验证行为；两私服后续另行接入，配置接口地址不会绕过当前旁路。

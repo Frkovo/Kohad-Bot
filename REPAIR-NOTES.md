@@ -1,5 +1,7 @@
 # Discord Bot 修复记录（2026-10-07）
 
+> 这是历史记录。存储层后来改为 MySQL + Redis，运行方式改为 Docker Compose；文中出现的 SQLite、本地 JSON 文件、内存缓存和 `npm start` 启动方式仅代表当时的实现，当前行为以 [README](README.md) 为准。
+
 ## 完成内容
 
 - 水鱼设备码申请过滤不适用的 OIDC scope，保留 prober.records.read / prober.records.write，未获批写权限时回退读权限。换票增加按应用 / 用户 / scope 的内存缓存与并发合并。

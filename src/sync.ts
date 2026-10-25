@@ -21,7 +21,7 @@ export type SyncResult = { df: SyncLeg; lxns: SyncLeg }
 async function syncDf(cfg: BotConfig, userId: string, result: MigrateSuccess): Promise<SyncLeg> {
   const df = dfCfg(cfg) // OAuth 旁路时为 null，仅走 Import-Token
   // 用户自备的旧版 Import-Token 优先；没有且 OAuth 启用才走 OAuth 写入（需 prober.records.write 已审批）
-  const importToken = dfImportTokens.get(userId)?.token
+  const importToken = (await dfImportTokens.get(userId))?.token
   if (!df && !importToken) return { status: "skipped", detail: cfg.dfOAuthEnabled ? t("sync.df.unconfigured") : t("sync.df.notBound") }
   try {
     let writeAuth: UpdateAuth
@@ -49,14 +49,14 @@ async function syncDf(cfg: BotConfig, userId: string, result: MigrateSuccess): P
   }
 }
 async function syncLx(cfg: BotConfig, userId: string, result: MigrateSuccess): Promise<SyncLeg> {
-  const binding = lxnsBindings.get(userId)
+  const binding = await lxnsBindings.get(userId)
   if (!binding) return { status: "skipped", detail: t("sync.lx.notBound") }
   try {
     const lx = await lxUserCfg(cfg, userId)
     if (!lx) return { status: "skipped", detail: t("sync.lx.unconfigured") }
     const plan = buildLxnsUploadPlan(result.data.pull, await fetchLxnsSongs(cfg.b50NewVersion, cfg.lxApiBase))
     if (!plan.mapped) return { status: "skipped", detail: t("sync.noRecords", { skipped: plan.total }) }
-    if (String(lxnsBindings.get(userId)?.friendCode) !== String(binding.friendCode)) return { status: "error", detail: t("sync.lx.changed") }
+    if (String((await lxnsBindings.get(userId))?.friendCode) !== String(binding.friendCode)) return { status: "error", detail: t("sync.lx.changed") }
     const uploaded = await uploadScores(lx, binding.friendCode, plan.scores)
     if (!uploaded.ok) return { status: "error", detail: t("sync.lx.partial", { uploaded: uploaded.uploaded, reason: uploaded.batches.find(b => !b.ok)?.message ?? t("sync.uploadFailed") }) }
     let verification: string

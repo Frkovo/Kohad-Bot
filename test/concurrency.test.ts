@@ -1,4 +1,4 @@
-import test from "node:test"
+import test, { after, beforeEach } from "node:test"
 import assert from "node:assert/strict"
 import { createQueue } from "../src/queue.js"
 import { createImportCoordinator, ImportBusyError, ImportQueueFullError } from "../src/import-account.js"
@@ -11,6 +11,12 @@ import { renderB50 } from "../src/b50/render.js"
 import { handleHelp } from "../src/handlers.js"
 import type { ChatInputCommandInteraction } from "discord.js"
 import { performance } from "node:perf_hooks"
+import { closeAppStore, openTestStore } from "./helpers.js"
+
+await openTestStore()
+// Scan de-duplication is keyed by the QR digest, so each test starts from an empty shared state.
+beforeEach(() => openTestStore())
+after(() => closeAppStore())
 
 function deferred<T>() {
   let resolve!: (value: T) => void, reject!: (error: Error) => void
@@ -91,7 +97,7 @@ test("queue failure/overflow releases capacity and user locks",async()=>{
 })
 
 test("DF upload failure cannot block LX upload/readback; requests use per-user binding and credentials",async t=>{
-  clearDfTokenCache()
+  await clearDfTokenCache()
   const tokenGate=deferred<void>()
   let lxUploads=0, dfUploads=0
   const settings={...cfg,dfOAuthEnabled:true,dfClientId:"fixture-client",dfClientSecret:"fixture-secret",dfAuthUrl:"https://df-auth.fixture",lxDevToken:"fixture-dev-token"}
@@ -117,7 +123,7 @@ test("DF upload failure cannot block LX upload/readback; requests use per-user b
   assert.match(sync.lxns.detail,/回读 1\/1 通过/)
 })
 test("read-only DF grant is reported and never uploads",async t=>{
-  clearDfTokenCache()
+  await clearDfTokenCache()
   let writes=0
   t.mock.method(lxnsBindings,"get",()=>null)
   t.mock.method(globalThis,"fetch",async(input:unknown)=>{

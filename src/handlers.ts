@@ -117,7 +117,7 @@ async function handleDfImportButton(interaction: ButtonInteraction, cfg: BotConf
     await interaction.showModal(modal)
     return
   }
-  const removed = dfImportTokens.remove(interaction.user.id)
+  const removed = await dfImportTokens.remove(interaction.user.id)
   await interaction.reply({ content: removed ? t("df.importCleared") : t("df.importNone"), flags: MessageFlags.Ephemeral })
 }
 
@@ -126,7 +126,7 @@ async function handleDfImportModal(interaction: ModalSubmitInteraction, cfg: Bot
   const token = interaction.fields.getTextInputValue("token").trim()
   // 格式未经水鱼文档确认：只校验非空、无空白、长度上限
   if (!/^\S{1,256}$/.test(token)) { await interaction.reply({ content: t("df.importInvalid"), flags: MessageFlags.Ephemeral }); return }
-  dfImportTokens.set(interaction.user.id, token)
+  await dfImportTokens.set(interaction.user.id, token)
   await interaction.reply({ content: t("df.importSaved", { tail: token.slice(-4) }), flags: MessageFlags.Ephemeral })
 }
 
@@ -177,7 +177,7 @@ export async function handleBindLx(interaction: ChatInputCommandInteraction, cfg
   }
   const method = interaction.options.getString("method")
   if (method && method !== "friend_code") { await interaction.reply({ content: t("lx.methodChanged"), flags: MessageFlags.Ephemeral }); return }
-  const existing = lxnsBindings.get(interaction.user.id)
+  const existing = await lxnsBindings.get(interaction.user.id)
   if (existing && !method) {
     const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
       new ButtonBuilder().setCustomId("lx:rebind").setLabel(t("lx.button.rebind")).setStyle(ButtonStyle.Primary),
@@ -212,7 +212,7 @@ export async function handleLxButton(interaction: ButtonInteraction, cfg: BotCon
     return
   }
   if (action === "unbind") {
-    const removed = lxnsBindings.remove(interaction.user.id)
+    const removed = await lxnsBindings.remove(interaction.user.id)
     await interaction.update({ content: removed ? t("lx.unbound") : t("lx.noRecord"), embeds: [], components: [] })
     return
   }
@@ -227,7 +227,7 @@ async function handleLxOAuthSubmit(interaction: ModalSubmitInteraction, cfg: Bot
   try {
     const tokens = await completeLxAuthorization(oauth, interaction.user.id, id, interaction.fields.getTextInputValue("callback"))
     const player = await fetchOwnPlayer({ devToken: "", apiBase: oauth.apiBase, accessToken: tokens.accessToken })
-    lxnsBindings.set(interaction.user.id, { friendCode: player.friend_code, name: player.name, boundAt: new Date().toISOString(), method: "oauth",
+    await lxnsBindings.set(interaction.user.id, { friendCode: player.friend_code, name: player.name, boundAt: new Date().toISOString(), method: "oauth",
       accessToken: tokens.accessToken, refreshToken: tokens.refreshToken, expiresAt: tokens.expiresAt, scope: tokens.scope })
     await interaction.editReply({ content: t("oauth.bound", { provider: t("provider.lx"), name: player.name, detail: t("oauth.detail.friendCode", { friendCode: String(player.friend_code) }) }) })
   } catch (e) {
@@ -256,7 +256,7 @@ export async function handleLxModal(interaction: ModalSubmitInteraction, cfg: Bo
     trace.step("provider")
     const player = await fetchPlayer(lx, raw)
     trace.step("credentials.save")
-    lxnsBindings.set(interaction.user.id, { friendCode: player.friend_code, name: player.name, boundAt: new Date().toISOString(), method: "friend_code" })
+    await lxnsBindings.set(interaction.user.id, { friendCode: player.friend_code, name: player.name, boundAt: new Date().toISOString(), method: "friend_code" })
     trace.step("reply")
     await interaction.editReply({ content: t("lx.bound", { name: player.name, rating: player.rating, friendCode: player.friend_code }) })
     trace.note("complete")
@@ -282,7 +282,7 @@ export async function handleB50(interaction: ChatInputCommandInteraction, cfg: B
   const req = b50Request(interaction, importing)
   try {
     if (!(await gate(interaction, cfg, lastUsed))) return
-    const target = importing ? CN_TARGET : resolveB50Query(req)
+    const target = importing ? CN_TARGET : await resolveB50Query(req)
     // No manual choice and no single server with data: ask the player; the pick resumes this query.
     if (!target) { await promptServer(interaction, req); return }
     await runB50(interaction, cfg, queue, req, target, trace)
@@ -335,7 +335,7 @@ async function runB50(interaction: CommandOrSelect, cfg: BotConfig, queue: BotQu
       imported = true
     }
     trace.step("binding.read")
-    const local = scoreDatabase().get(userId)
+    const local = await scoreDatabase().get(userId)
     let profile: PlayerProfile | undefined = local?.profile
     if (importing) {
       // /upload is the sync report itself, so it waits for prober results.
@@ -357,7 +357,7 @@ async function runB50(interaction: CommandOrSelect, cfg: BotConfig, queue: BotQu
     const remote = !localOnly && !(source === "auto" && local)
     if (remote && (source === "auto" || source === "df")) {
       const df = dfCfg(cfg)
-      const importToken = dfImportTokens.get(userId)?.token
+      const importToken = (await dfImportTokens.get(userId))?.token
       if (df || importToken) {
         try {
           trace.step("provider")
@@ -367,7 +367,7 @@ async function runB50(interaction: CommandOrSelect, cfg: BotConfig, queue: BotQu
             try { records = await fetchPlayerRecords((await getDfAccessToken(df!, userId, "prober.records.read")).token) }
             catch (e) {
               if (!(e instanceof DfUnauthorizedError)) throw e
-              clearDfTokenCache(userId)
+              await clearDfTokenCache(userId)
               records = await fetchPlayerRecords((await getDfAccessToken(df!, userId, "prober.records.read")).token)
             }
           }
@@ -387,7 +387,7 @@ async function runB50(interaction: CommandOrSelect, cfg: BotConfig, queue: BotQu
     if (remote && !inputs.length && (source === "auto" || source === "lxns")) {
       try {
         trace.step("provider")
-        const lx = await lxUserCfg(cfg, userId), binding = lxnsBindings.get(userId)
+        const lx = await lxUserCfg(cfg, userId), binding = await lxnsBindings.get(userId)
         if (!lx || !binding) throw new UserError(t("err.lxNotBound"))
         const player = await fetchPlayer(lx, binding.friendCode)
         title = player.name; accountRating = player.rating
@@ -493,7 +493,7 @@ export async function handleB50Pick(interaction: StringSelectMenuInteraction, cf
     shared = publicReply(req)
     const server = interaction.values[0]
     if (!isEnabledServer(server)) throw new UserError(t("server.invalidOption"))
-    serverStore().setPreferred(req.userId, server)
+    await serverStore().setPreferred(req.userId, server)
     await runB50(interaction, cfg, queue, req, { server, fromData: false }, trace)
   } catch (e) { await safeError(interaction, e, "b50", shared, trace) }
 }
@@ -508,7 +508,7 @@ export async function handleButton(interaction: ButtonInteraction, cfg: BotConfi
     try {
       const df = dfCfg(cfg)
       if (!df) throw new UserError(t("err.dfUnconfigured"))
-      clearDfTokenCache(interaction.user.id)
+      await clearDfTokenCache(interaction.user.id)
       await getDfAccessToken(df, interaction.user.id, "prober.records.read")
       await interaction.editReply({ content: t("df.bindOk") })
     } catch (e) { await interaction.editReply({ content: e instanceof NotBoundError ? t("df.notBound") : t("df.bindCheckFailed") }) }

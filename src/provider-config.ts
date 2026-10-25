@@ -15,7 +15,7 @@ export function lxOAuthCfg(cfg: BotConfig): LxOAuthConfig | null {
   return cfg.lxClientId && cfg.lxClientSecret ? { clientId: cfg.lxClientId, clientSecret: cfg.lxClientSecret, redirectUri: cfg.lxRedirectUri, apiBase: cfg.lxApiBase } : null
 }
 export async function lxUserCfg(cfg: BotConfig, userId: string): Promise<LxnsConfig | null> {
-  if (lxnsBindings.get(userId)?.method === "oauth") {
+  if ((await lxnsBindings.get(userId))?.method === "oauth") {
     const oauth = lxOAuthCfg(cfg)
     if (!oauth) throw new Error("落雪 OAuth 应用配置缺失，请检查 LX_CLIENT_ID / LX_CLIENT_SECRET")
     return authorizedLxConfig(oauth, userId, lxnsBindings)

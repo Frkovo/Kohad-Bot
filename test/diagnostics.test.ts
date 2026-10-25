@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 import { randomBytes } from "node:crypto"
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { MessageFlags, type ButtonInteraction, type ChatInputCommandInteraction, type ModalSubmitInteraction, type StringSelectMenuInteraction } from "discord.js"
@@ -10,15 +10,15 @@ import { t } from "../src/messages.js"
 import { errorText } from "../src/util.js"
 import { syncRemote } from "../src/multiserver/sync.js"
 import { HttpStatusError, UserError, type ScoreRecord, type Snapshot } from "../src/multiserver/registry.js"
-import { closeServerStore, serverStore } from "../src/multiserver/store.js"
+import { serverStore } from "../src/multiserver/store.js"
 import { regionCatalog } from "../src/multiserver/catalog.js"
 import { handleRemoteB50, handleServerButton, handleServerCommand, handleServerModal, handleServerSelect } from "../src/multiserver/interactions.js"
 import type { BotConfig } from "../src/config.js"
 import { pullAccount } from "../src/migrate-client.js"
 import { handleB50 } from "../src/handlers.js"
 import { createQueue } from "../src/queue.js"
-import { createLxnsBindingStore } from "../src/lxns/bindings.js"
-import { fileURLToPath } from "node:url"
+import { ROOT, dataDir } from "../src/store/paths.js"
+import { closeAppStore, openTestStore } from "./helpers.js"
 
 const cfg = { allowedUserIds: new Set<string>(), maxPendingReads: 9, pullConcurrency: 3 } as BotConfig
 const record: ScoreRecord = { title: "Fixture", type: "DX", level: 3, achievement: 1005000, dxScore: 2900, fc: "app", fs: "fsdp", playCount: 17, ds: 14.8, version: 25, isNew: true }
@@ -41,10 +41,11 @@ function scopedEnv(values: Record<string, string | undefined>) {
 }
 
 async function withStore(run: (logPath: string) => Promise<void>) {
-  const folder = mkdtempSync(path.join(tmpdir(), "kohad-diag-"))
+  const folder = path.join(tmpdir(), `kohad-diag-${randomBytes(6).toString("hex")}`)
   const logPath = path.join(folder, "logs", "bot-debug.jsonl")
-  const restore = scopedEnv({ LOCAL_SCORE_DB: path.join(folder, "scores.sqlite"), B50_AUTH_KEY: randomBytes(32).toString("base64"), B50_AUTH_KEY_FILE: undefined, B50_DEBUG_LOG: logPath })
-  try { await run(logPath) } finally { closeServerStore(); restore(); rmSync(folder, { recursive: true, force: true }) }
+  const restore = scopedEnv({ B50_DEBUG_LOG: logPath })
+  await openTestStore()
+  try { await run(logPath) } finally { await closeAppStore(); restore() }
 }
 
 function interaction(name: string, options: Record<string, string | boolean | null> = {}, user = "user-a") {
@@ -67,12 +68,12 @@ function readLog(logPath: string): Record<string, unknown>[] {
 }
 
 // Seed a bound JP account with one cached record so B50 can run a refresh path against fake network failures.
-function seedBinding(fetchedAt = new Date().toISOString()) {
+async function seedBinding(fetchedAt = new Date().toISOString()) {
   const store = serverStore()
-  const revision = store.bind("user-a", "jp", "account-a", "Fixture", { username: "fixture", password: SECRET_PASSWORD, cardIndex: 2 })
+  const revision = await store.bind("user-a", "jp", "account-a", "Fixture", { username: "fixture", password: SECRET_PASSWORD, cardIndex: 2 })
   const chart = [...regionCatalog("jp").index.values()].find(c => c.level === 3)!
   const cached: Snapshot = { accountKey: "account-a", profile: { name: "Fixture" }, records: [{ ...record, title: chart.title, type: chart.type, level: chart.level }], fetchedAt, source: "private_api", countsComplete: true }
-  store.save("user-a", "jp", revision, cached)
+  await store.save("user-a", "jp", revision, cached)
 }
 
 const idIn = (text: string) => {
@@ -142,15 +143,15 @@ test("safe route logging exposes only fixed route names and allowlisted hosts", 
 })
 
 test("debug log path honours off, explicit override and default test isolation", () => {
-  const restore = scopedEnv({ B50_DEBUG_LOG: "off", NODE_TEST_CONTEXT: undefined, LOCAL_SCORE_DB: undefined })
+  const restore = scopedEnv({ B50_DEBUG_LOG: "off", NODE_TEST_CONTEXT: undefined, B50_DATA_DIR: undefined })
   try {
     assert.equal(debugLogPath(), undefined)
     process.env.B50_DEBUG_LOG = path.join(tmpdir(), "override-bot-debug.jsonl")
     assert.equal(debugLogPath(), path.resolve(process.env.B50_DEBUG_LOG))
     delete process.env.B50_DEBUG_LOG
-    assert.equal(debugLogPath(), fileURLToPath(new URL("../.data/logs/bot-debug.jsonl", import.meta.url)))
-    process.env.LOCAL_SCORE_DB = path.join("data-root", "scores.sqlite")
-    assert.equal(debugLogPath(), path.resolve("data-root", "logs", "bot-debug.jsonl"))
+    assert.equal(debugLogPath(), path.join(ROOT, ".data", "logs", "bot-debug.jsonl"))
+    process.env.B50_DATA_DIR = path.join(tmpdir(), "kohad-data-root")
+    assert.equal(debugLogPath(), path.join(dataDir(), "logs", "bot-debug.jsonl"))
     process.env.NODE_TEST_CONTEXT = "child"
     assert.equal(debugLogPath(), undefined)
   } finally { restore() }
@@ -193,7 +194,7 @@ test("bounded log rotates to one backup once the 5 MB limit is reached", async c
 test("redirected query strings and credentials never reach logs or private replies", async ctx => {
   quietConsole(ctx)
   await withStore(async logPath => {
-    seedBinding()
+    await seedBinding()
     ctx.mock.method(globalThis, "fetch", async () => new Response("", {
       status: 302,
       headers: { location: `https://evil.example/cb?sid=${SECRET_SID}&token=${SECRET_TOKEN}` },
@@ -219,7 +220,7 @@ test("DNS, TLS and timeout failures after a public B50 ACK are private, classifi
   ]
   for (const [category, error, reason, code] of scenarios) {
     await withStore(async logPath => {
-      seedBinding()
+      await seedBinding()
       ctx.mock.method(globalThis, "fetch", async () => { throw error })
       const query = interaction("b50", { server: "jp", refresh: true, public: true })
       await handleRemoteB50(query.command, cfg, "jp")
@@ -247,7 +248,7 @@ test("DNS, TLS and timeout failures after a public B50 ACK are private, classifi
 test("a stale local snapshot is served without contacting NET; only an explicit refresh reaches NET and hides its error body", async ctx => {
   quietConsole(ctx)
   await withStore(async logPath => {
-    seedBinding("2000-01-01T00:00:00.000Z")
+    await seedBinding("2000-01-01T00:00:00.000Z")
     const hosts: string[] = []
     ctx.mock.method(globalThis, "fetch", async (input: unknown) => {
       const host = new URL(String(input)).hostname
@@ -290,7 +291,7 @@ test("first sync after a successful bind keeps credentials, replies privately wi
     const confirm = interaction("")
     Object.assign(confirm.value, { customId: confirmId })
     await handleServerButton(confirm.value as unknown as ButtonInteraction, cfg)
-    assert.ok(serverStore().credentials("user-a", "jp"), "credentials must be saved before the first sync")
+    assert.ok(await serverStore().credentials("user-a", "jp"), "credentials must be saved before the first sync")
     const last = confirm.messages.at(-1).content as string
     assert.match(last, /首次同步失败/)
     const id = idIn(last)
@@ -389,7 +390,7 @@ test("CN migration transport and malformed HTTP failures share a private reply i
 test("B50 without public:true defers ephemerally, so a failure is never posted to the channel", async ctx => {
   quietConsole(ctx)
   await withStore(async () => {
-    seedBinding()
+    await seedBinding()
     ctx.mock.method(globalThis, "fetch", async () => { throw Object.assign(new Error("timed out"), { name: "TimeoutError" }) })
     const query = interaction("b50", { server: "jp", refresh: true })
     await handleRemoteB50(query.command, cfg, "jp")
@@ -415,24 +416,10 @@ test("a CN B50 QR failure after a public ACK sends diagnostics privately and log
   })
 })
 
-test("a malformed legacy binding file logs its stage without echoing the JSON parser's credential snippet", async ctx => {
-  quietConsole(ctx)
-  await withStore(async logPath => {
-    const bindingFile = path.join(path.dirname(logPath), "malformed-fixture.json")
-    mkdirSync(path.dirname(bindingFile), { recursive: true })
-    writeFileSync(bindingFile, `{ "refreshToken": "${SECRET_TOKEN}", bad-json`)
-    assert.equal(createLxnsBindingStore(bindingFile).get("fixture-user"), null)
-    const failed = readLog(logPath).find(line => line.event === "failed")!
-    assert.equal(failed.stage, "binding.read")
-    assert.equal(failed.category, "internal")
-    assert.equal(readFileSync(logPath, "utf8").includes(SECRET_TOKEN), false)
-  })
-})
-
 test("a shared sync job reports ONE failure: every caller gets the job's id and stage, logged once", async ctx => {
   quietConsole(ctx)
   await withStore(async logPath => {
-    seedBinding("2000-01-01T00:00:00.000Z")
+    await seedBinding("2000-01-01T00:00:00.000Z")
     const fixture = jpPages()
     ctx.mock.method(globalThis, "fetch", async (input: unknown, init?: RequestInit) => {
       const url = new URL(String(input))
@@ -459,7 +446,7 @@ test("a shared sync job reports ONE failure: every caller gets the job's id and 
 test("an HTTP 503 on the card page is surfaced without a second login attempt", async ctx => {
   quietConsole(ctx)
   await withStore(async logPath => {
-    seedBinding()
+    await seedBinding()
     let calls = 0
     ctx.mock.method(globalThis, "fetch", async () => { calls++; return new Response("synthetic-sensitive-response", { status: 503 }) })
     await assert.rejects(syncRemote("user-a", "jp", undefined, new Trace("sync", "jp")), (error: unknown) => {
@@ -477,7 +464,7 @@ test("credential precheck failures are logged once at credentials.read", async c
   quietConsole(ctx)
   await withStore(async logPath => {
     const store = serverStore()
-    store.bind("user-a", "jp", "account-a", "Fixture", { username: "fixture", password: SECRET_PASSWORD, cardIndex: 2 })
+    await store.bind("user-a", "jp", "account-a", "Fixture", { username: "fixture", password: SECRET_PASSWORD, cardIndex: 2 })
     const trace = new Trace("sync", "jp")
     ctx.mock.method(store, "credentials", () => { throw new UserError(t("store.decryptFailed")) })
     await assert.rejects(syncRemote("user-a", "jp", undefined, trace), (error: unknown) => error instanceof DiagnosticFailure && error.stage === "credentials.read")

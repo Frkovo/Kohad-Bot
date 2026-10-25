@@ -1,0 +1,23 @@
+# Runtime image only needs the compiled output; assets are mounted read-only because they are not redistributed.
+node_modules
+dist
+.data
+data
+test
+reference
+assets
+*.zip
+*.sqlite
+*.sqlite-*
+*.log
+*.jsonl
+.env
+.env.*
+!.env.example
+.git
+.gitignore
+Dockerfile
+compose.yaml
+README.md
+MULTI_SERVER.md
+REPAIR-NOTES.md

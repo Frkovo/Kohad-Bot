@@ -10,22 +10,27 @@
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "tsc -p tsconfig.json",
-    "postbuild": "node scripts/deploy-hk.mjs",
     "test": "tsx --test test/**/*.test.ts",
+    "check:sql": "node scripts/check-sql.mjs",
     "start": "node dist/index.js",
     "preview": "tsx scripts/preview.ts",
-    "preview:multiserver": "tsx scripts/preview-multiserver.ts"
+    "preview:multiserver": "tsx scripts/preview-multiserver.ts",
+    "docker:up": "docker compose up -d --build",
+    "docker:logs": "docker compose logs -f bot"
   },
   "dependencies": {
     "@resvg/resvg-js": "^2.6.2",
     "cheerio": "^1.2.0",
     "discord.js": "14.27.0",
+    "ioredis": "^5.11.1",
+    "mysql2": "^3.24.6",
     "sharp": "^0.34.4",
     "tough-cookie": "^6.0.2",
     "undici": "^6.29.0"
   },
   "devDependencies": {
     "@types/node": "^22.7.4",
+    "node-sql-parser": "^5.4.0",
     "tsx": "^4.19.0",
     "typescript": "^5.6.3"
   }

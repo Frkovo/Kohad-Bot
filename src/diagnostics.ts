@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto"
 import { appendFileSync, existsSync, mkdirSync, renameSync, statSync, unlinkSync } from "node:fs"
 import path from "node:path"
-import { fileURLToPath } from "node:url"
 import { t } from "./messages.js"
+import { dataDir } from "./store/paths.js"
 import { HttpStatusError, UserError } from "./multiserver/registry.js"
 
 export const STAGES = ["interaction", "binding.read", "credentials.read", "credentials.save", "auth.form", "auth.submit", "auth.redirect", "cards.parse", "card.select", "profile.read", "profile.parse", "records.fetch", "records.parse", "snapshot.save", "rating.calculate", "image.render", "reply", "import", "provider", "runtime"] as const
@@ -18,7 +18,7 @@ export type Host = "maimaidx.jp" | "maimaidx-eng.com" | "lng-tgk-aime-gw.am-all.
 export type Route = "login-page" | "login-submit" | "gateway-login" | "gateway-submit" | "aime-list" | "aime-select" | "home" | "music-records" | "net-other" | "blocked"
 
 // Local data files the bot reads. Only these basenames may appear in logs (never full paths).
-const KNOWN_FILES = new Set(["binding-master.key", "scores.sqlite", "dxdata.json", "df-music.json", "fit-stats.json", "sdgb-156-charts.json", "dxdata-source.json", "maimai-net-intermediates.pem", "keys.json"])
+const KNOWN_FILES = new Set(["binding-master.key", "dxdata.json", "df-music.json", "fit-stats.json", "sdgb-156-charts.json", "dxdata-source.json", "maimai-net-intermediates.pem", "keys.json"])
 // Allowlisted metadata only. Callers must never pass URLs, headers, bodies, HTML, usernames, passwords, tokens or cookie values.
 export type SafeMeta = {
   host?: Host; route?: Route; method?: "GET" | "POST"; status?: number; elapsedMs?: number; bytes?: number; redirects?: number
@@ -55,7 +55,7 @@ const DNS = new Set(["ENOTFOUND", "EAI_AGAIN"])
 const TLS = new Set(["UNABLE_TO_VERIFY_LEAF_SIGNATURE", "UNABLE_TO_GET_ISSUER_CERT_LOCALLY", "CERT_HAS_EXPIRED", "CERT_NOT_YET_VALID", "DEPTH_ZERO_SELF_SIGNED_CERT", "SELF_SIGNED_CERT_IN_CHAIN", "ERR_TLS_CERT_ALTNAME_INVALID"])
 const TIMEOUT = new Set(["ETIMEDOUT", "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_HEADERS_TIMEOUT", "UND_ERR_BODY_TIMEOUT"])
 const CONNECTION = new Set(["ECONNREFUSED", "ECONNRESET", "EHOSTUNREACH", "ENETUNREACH", "UND_ERR_SOCKET", "EPIPE"])
-const STORAGE = new Set(["EACCES", "EPERM", "ENOENT", "ENOSPC", "EROFS", "EBUSY", "ERR_SQLITE_ERROR"])
+const STORAGE = new Set(["EACCES", "EPERM", "ENOENT", "ENOSPC", "EROFS", "EBUSY", "ER_ACCESS_DENIED_ERROR", "ER_NO_SUCH_TABLE", "ER_DUP_ENTRY", "PROTOCOL_CONNECTION_LOST"])
 const DISCORD = new Set(["10003", "10062", "40060", "50001", "50013", "InteractionAlreadyReplied", "InteractionNotReplied"])
 const STRING_FIELDS: Partial<Record<typeof META_KEYS[number], ReadonlySet<string>>> = {
   host: new Set([...HOSTS, "blocked"]),
@@ -103,13 +103,12 @@ function httpStatus(error: unknown): number | undefined {
 }
 
 const LOG_LIMIT_BYTES = 5 * 1024 * 1024
-const DEFAULT_DB = fileURLToPath(new URL("../.data/scores.sqlite", import.meta.url))
 export function debugLogPath(): string | undefined {
   if (process.env.B50_DEBUG_LOG === "off") return undefined
   if (process.env.B50_DEBUG_LOG) return path.resolve(process.env.B50_DEBUG_LOG)
-  // node --test sets NODE_TEST_CONTEXT; tests must not create .data logs unless they pass B50_DEBUG_LOG explicitly.
+  // node --test sets NODE_TEST_CONTEXT; tests must not create logs unless they pass B50_DEBUG_LOG explicitly.
   if (process.env.NODE_TEST_CONTEXT) return undefined
-  return path.resolve(path.join(path.dirname(process.env.LOCAL_SCORE_DB || DEFAULT_DB), "logs/bot-debug.jsonl"))
+  return path.resolve(path.join(dataDir(), "logs", "bot-debug.jsonl"))
 }
 // Bounded: at most one rotated backup, so the total stays near 2 x LOG_LIMIT_BYTES.
 function write(record: object, failed = false) {

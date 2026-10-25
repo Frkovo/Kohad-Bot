@@ -50,7 +50,7 @@ export async function completeLxAuthorization(cfg: LxOAuthConfig, userId: string
 }
 
 export async function authorizedLxConfig(cfg: LxOAuthConfig, userId: string, store: LxnsBindingStore): Promise<LxnsConfig> {
-  const binding = store.get(userId)
+  const binding = await store.get(userId)
   if (!binding || binding.method !== "oauth" || !binding.refreshToken) throw new Error("请先 /bindlx 完成落雪 OAuth 授权")
   if (binding.accessToken && Date.now() < Number(binding.expiresAt) - 30000) return { devToken: "", apiBase: cfg.apiBase, accessToken: binding.accessToken }
   const key = `${cfg.apiBase}:${cfg.clientId}:${userId}`
@@ -58,9 +58,9 @@ export async function authorizedLxConfig(cfg: LxOAuthConfig, userId: string, sto
   if (running) return running
   const task = (async () => {
     const token = await tokenRequest(cfg, { grant_type: "refresh_token", refresh_token: binding.refreshToken! })
-    const current = store.get(userId)
+    const current = await store.get(userId)
     if (!current || current.refreshToken !== binding.refreshToken) throw new Error("绑定已改变，请重试")
-    store.set(userId, { ...binding, ...token }) // persist rotated token before any API request
+    await store.set(userId, { ...binding, ...token }) // persist rotated token before any API request
     return { devToken: "", apiBase: cfg.apiBase, accessToken: token.accessToken }
   })()
   refreshes.set(key, task)

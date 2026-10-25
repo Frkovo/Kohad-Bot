@@ -5,6 +5,10 @@
 import { createHash } from "node:crypto"
 import { createOAuthSession, type OAuthSession } from "../oauth-session.js"
 import { dfBindings, type DfBinding } from "./bindings.js"
+import { appStore } from "../store/index.js"
+import { kvKeys } from "../store/redis.js"
+
+const DF_CACHE_PREFIX = "bot:df:"
 
 export type DfOAuthConfig = {
   clientId: string
@@ -79,12 +83,31 @@ export async function exchangeDfCode(cfg: DfOAuthConfig, redirectUri: string, se
 
 export type DfToken = { token: string; scope: string }
 
-const userTokens = new Map<string, { token: string; scope: string; expiresAt: number }>()
+// Access tokens are cached in Redis so every bot replica reuses one exchange (水鱼 rotates refresh tokens on use).
+type StoredToken = DfToken & { expiresAt: number; fingerprint?: string }
+
+async function readToken(key: string, fingerprint?: string): Promise<DfToken | null> {
+  const raw = await appStore().kv.get(key)
+  if (!raw) return null
+  try {
+    const parsed = JSON.parse(raw) as Partial<StoredToken>
+    if (typeof parsed.token !== "string" || typeof parsed.scope !== "string" || typeof parsed.expiresAt !== "number") return null
+    if (parsed.expiresAt <= Date.now()) return null
+    if (fingerprint !== undefined && parsed.fingerprint !== fingerprint) return null
+    return { token: parsed.token, scope: parsed.scope }
+  } catch { return null }
+}
+
+async function writeToken(key: string, grant: StoredToken): Promise<void> {
+  await appStore().kv.set(key, JSON.stringify(grant), Math.max(1000, grant.expiresAt - Date.now()))
+}
+
 const userFlights = new Map<string, Promise<DfToken>>()
 
 async function tokenFromBinding(cfg: DfOAuthConfig, userId: string, binding: DfBinding): Promise<DfToken> {
-  const hit = userTokens.get(userId)
-  if (hit && Date.now() < hit.expiresAt) return { token: hit.token, scope: hit.scope }
+  const cacheKey = kvKeys.dfToken(userId)
+  const hit = await readToken(cacheKey)
+  if (hit) return hit
   const flight = userFlights.get(userId)
   if (flight) return flight
   const task = (async () => {
@@ -92,12 +115,12 @@ async function tokenFromBinding(cfg: DfOAuthConfig, userId: string, binding: DfB
       grant_type: "refresh_token", refresh_token: binding.refreshToken, client_id: cfg.clientId, client_secret: cfg.clientSecret,
     }))
     // Refresh tokens are single-use and rotate; a reused token revokes the chain, so the binding is dropped.
-    if (status === 400 && json?.error === "invalid_grant") { dfBindings.remove(userId); throw new NotBoundError() }
+    if (status === 400 && json?.error === "invalid_grant") { await dfBindings.remove(userId); throw new NotBoundError() }
     const grant = grantFrom(status, json)
-    const current = dfBindings.get(userId)
+    const current = await dfBindings.get(userId)
     if (!current || current.refreshToken !== binding.refreshToken) throw new DfProviderError(0, "binding_changed")
-    dfBindings.set(userId, { ...current, refreshToken: grant.refreshToken, scope: grant.scope }) // persist the rotated token before use
-    userTokens.set(userId, { token: grant.accessToken, scope: grant.scope, expiresAt: grant.expiresAt })
+    await dfBindings.set(userId, { ...current, refreshToken: grant.refreshToken, scope: grant.scope }) // persist the rotated token before use
+    await writeToken(cacheKey, { token: grant.accessToken, scope: grant.scope, expiresAt: grant.expiresAt })
     return { token: grant.accessToken, scope: grant.scope }
   })()
   userFlights.set(userId, task)
@@ -105,22 +128,22 @@ async function tokenFromBinding(cfg: DfOAuthConfig, userId: string, binding: DfB
 }
 
 // 旧设备码绑定：换票缓存令牌 5 分钟有效，留 30s 余量；同用户同 scope 复用（换票限流 60 次/小时/用户）
-type CachedToken = { token: string; scope: string; expiresAt: number }
-const tokenCache = new Map<string, CachedToken>()
 const tokenFlights = new Map<string, Promise<DfToken>>()
 
 async function legacyOnBehalfToken(cfg: DfOAuthConfig, externalId: string, scope: string): Promise<DfToken> {
-  const cacheKey = `${externalId}|${cfg.authUrl}|${cfg.clientId}|${scope}`
-  const hit = tokenCache.get(cacheKey)
-  if (hit && Date.now() < hit.expiresAt) return { token: hit.token, scope: hit.scope }
+  // The fingerprint rejects tokens minted for a different client/scope after a config change.
+  const fingerprint = `${cfg.authUrl}|${cfg.clientId}|${scope}`,
+    cacheKey = kvKeys.dfLegacyToken(`${externalId}:${createHash("sha256").update(fingerprint).digest("hex").slice(0, 16)}`)
+  const hit = await readToken(cacheKey, fingerprint)
+  if (hit) return hit
   const flight = tokenFlights.get(cacheKey)
   if (flight) return flight
-  const task = exchangeToken(cfg, externalId, scope, cacheKey)
+  const task = exchangeToken(cfg, externalId, scope, cacheKey, fingerprint)
   tokenFlights.set(cacheKey, task)
   try { return await task } finally { tokenFlights.delete(cacheKey) }
 }
 
-async function exchangeToken(cfg: DfOAuthConfig, externalId: string, scope: string, cacheKey: string): Promise<DfToken> {
+async function exchangeToken(cfg: DfOAuthConfig, externalId: string, scope: string, cacheKey: string, fingerprint: string): Promise<DfToken> {
   const { status, json } = await postForm(`${cfg.authUrl}/oauth/token`, new URLSearchParams({
     grant_type: "urn:diving-fish:params:oauth:grant-type:on-behalf-of",
     client_id: cfg.clientId,
@@ -136,20 +159,22 @@ async function exchangeToken(cfg: DfOAuthConfig, externalId: string, scope: stri
   const token = String(json.access_token)
   const granted = String(json.scope ?? scope)
   const expiresIn = Number(json.expires_in ?? 300)
-  tokenCache.set(cacheKey, { token, scope: granted, expiresAt: Date.now() + Math.max(30, expiresIn - 30) * 1000 })
+  await writeToken(cacheKey, { token, scope: granted, expiresAt: Date.now() + Math.max(30, expiresIn - 30) * 1000, fingerprint })
   return { token, scope: granted }
 }
 
 /** 取得该 Discord 用户的水鱼访问令牌。网页绑定优先，其次旧设备码绑定。 */
 export async function getDfAccessToken(cfg: DfOAuthConfig, externalId: string, scope: string): Promise<DfToken> {
-  const binding = dfBindings.get(externalId)
+  const binding = await dfBindings.get(externalId)
   if (binding) return tokenFromBinding(cfg, externalId, binding)
   return legacyOnBehalfToken(cfg, externalId, scope)
 }
 
 /** 401 时清缓存（令牌可能已失效）；不传 externalId 则全清 */
-export function clearDfTokenCache(externalId?: string): void {
-  if (!externalId) { tokenCache.clear(); userTokens.clear(); return }
-  for (const k of [...tokenCache.keys()]) if (k.startsWith(`${externalId}|`)) tokenCache.delete(k)
-  userTokens.delete(externalId)
+export async function clearDfTokenCache(externalId?: string): Promise<void> {
+  const kv = appStore().kv
+  if (!externalId) { await kv.delByPrefix(DF_CACHE_PREFIX); return }
+  await kv.del(kvKeys.dfToken(externalId))
+  await kv.delByPrefix(`${kvKeys.dfLegacyToken(externalId)}`)
 }
+

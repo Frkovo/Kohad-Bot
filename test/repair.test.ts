@@ -1,19 +1,18 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 import { buildChartIndex, computeB50, type B50Input } from "../src/b50/compute.js"
-import { createScoreDatabase } from "../src/local/database.js"
+import { createMemoryProviderStores, createMemoryScoreStore } from "../src/store/memory.js"
 import { startDfAuthorization, subjectRef, getDfAccessToken, clearDfTokenCache } from "../src/df/oauth.js"
 import { fetchPlayer } from "../src/lxns/client.js"
-import { createLxnsBindingStore } from "../src/lxns/bindings.js"
 import { startLxAuthorization, completeLxAuthorization, authorizedLxConfig } from "../src/lxns/oauth.js"
-import { mkdtempSync, rmSync } from "node:fs"
-import { tmpdir } from "node:os"
-import path from "node:path"
 import type { MigrateSuccess } from "../src/migrate-client.js"
 import { extractPlayerProfile } from "../src/local/profile.js"
-import { DatabaseSync } from "node:sqlite"
 import { verifyDfRecords, verifyLxRecords } from "../src/verification.js"
 import { lxnsBestsToB50 } from "../src/lxns/bests.js"
+import { closeAppStore, openTestStore } from "./helpers.js"
+
+await openTestStore()
+test.after(() => closeAppStore())
 
 const input = (musicId: number, more: Partial<B50Input> = {}): B50Input => ({ musicId, level: 3, achievement: 1005000, dxScore: 1000, fc: "", fs: "", ...more })
 const catalog = () => buildChartIndex([
@@ -56,34 +55,25 @@ test("cached LX B50 candidates are repartitioned using current chart versions",(
   assert.equal(r.b15[0].musicId,1842)
   assert.equal(r.b35[0].musicId,30)
 })
-test("local DB saves whitelisted scores, persists PC, does not add cumulative counts, isolates users/account switches", () => {
-  const store=createScoreDatabase(":memory:")
+test("score store keeps whitelisted scores, persists PC, does not add cumulative counts, isolates users/account switches", async () => {
+  const store=createMemoryScoreStore()
   const packageFor=(id:number,count:number,ach=1000000)=>({source:{userId:id,userName:"Tester"},data:{pull:{music:{userMusicDetailList:[{musicId:11842,level:3,achievement:ach,playCount:count,deluxscoreMax:123,token:"must-not-save"}]}}}} as unknown as MigrateSuccess)
-  store.save("a",packageFor(1,20))
-  store.save("a",packageFor(1,20,970000))
-  assert.equal(store.get("a")!.inputs[0].playCount,20)
-  assert.equal(store.get("a")!.inputs[0].achievement,1000000)
-  assert.equal(JSON.stringify(store.get("a")).includes("must-not-save"),false)
-  assert.equal(store.get("b"),null)
-  store.save("a",packageFor(2,1,800000))
-  assert.equal(store.get("a")!.inputs[0].playCount,1)
-  store.close()
+  await store.save("a",packageFor(1,20))
+  await store.save("a",packageFor(1,20,970000))
+  assert.equal((await store.get("a"))!.inputs[0].playCount,20)
+  assert.equal((await store.get("a"))!.inputs[0].achievement,1000000)
+  assert.equal(JSON.stringify(await store.get("a")).includes("must-not-save"),false)
+  assert.equal(await store.get("b"),null)
+  await store.save("a",packageFor(2,1,800000))
+  assert.equal((await store.get("a"))!.inputs[0].playCount,1)
 })
-test("game nickname/icon/nameplate survive DB reopening and migrate an existing score schema",()=>{
-  const dir=mkdtempSync(path.join(tmpdir(),"sdgb-profile-"));const file=path.join(dir,"scores.sqlite")
-  const old=new DatabaseSync(file)
-  old.exec("CREATE TABLE accounts(discord_id TEXT PRIMARY KEY,game_id TEXT NOT NULL,name TEXT NOT NULL,imported_at TEXT NOT NULL); INSERT INTO accounts VALUES('old','99','旧玩家','2026-10-01')")
-  old.close()
+test("game nickname/icon/nameplate are stored per Discord user and no credential field is kept", async () => {
+  const store=createMemoryScoreStore()
   const data={source:{userId:1,userName:"旧昵称"},data:{pull:{userData:{userData:[{userName:"玩家新昵称",iconId:550201,nameplateId:550201,playerRating:15300,accessCode:"must-not-save"}]},music:{userMusicDetailList:[]}}}} as unknown as MigrateSuccess
-  const store=createScoreDatabase(file)
-  assert.equal(store.get("old")!.name,"旧玩家")
-  store.save("u",data);store.close()
-  const reopened=createScoreDatabase(file)
-  assert.deepEqual(reopened.get("u")!.profile,{name:"玩家新昵称",iconId:550201,nameplateId:550201,rating:15300})
-  assert.equal(JSON.stringify(reopened.get("u")).includes("must-not-save"),false)
-  reopened.close()
+  await store.save("u",data)
+  assert.deepEqual((await store.get("u"))!.profile,{name:"玩家新昵称",iconId:550201,nameplateId:550201,rating:15300})
+  assert.equal(JSON.stringify(await store.get("u")).includes("must-not-save"),false)
   assert.deepEqual(extractPlayerProfile({...data,data:{...data.data,pull:{userData:{userName:"对象形态",iconId:"200201",plateId:200201}}}}),{name:"对象形态",iconId:200201,nameplateId:200201,rating:undefined})
-  rmSync(dir,{recursive:true,force:true})
 })
 test("readback accepts better remote bests but reports missing or weaker achievements/DX/combo",()=>{
   const e={title:"Synthesis.",type:"DX",level_index:3,achievements:100,dxScore:123,fc:"fcp",fs:"fs"}
@@ -103,14 +93,17 @@ test("DF web authorization sends PKCE and only prober scopes, without device-flo
   assert.match(id,/^[a-f0-9]{24}$/)
 })
 test("DF concurrent token exchange is single flight and caches per application", async t=>{
-  clearDfTokenCache();let calls=0
+  await clearDfTokenCache();let calls=0
   t.mock.method(globalThis,"fetch",async()=>{calls++;return Response.json({access_token:"fixture",scope:"prober.records.read",expires_in:300})})
   const cfg={clientId:"app",clientSecret:"fixture",authUrl:"https://auth.test"}
   await Promise.all(Array.from({length:8},()=>getDfAccessToken(cfg,"u","prober.records.read")))
   assert.equal(calls,1)
   await getDfAccessToken({...cfg,clientId:"another-app"},"u","prober.records.read")
   assert.equal(calls,2)
-  clearDfTokenCache()
+  await clearDfTokenCache()
+  // The cache lives in the shared Kv, so clearing it forces a new exchange.
+  await getDfAccessToken(cfg,"u","prober.records.read")
+  assert.equal(calls,3)
 })
 test("LXNS keeps friend code digits and matches credential type to endpoint/header", async t=>{
   let url="",auth=""
@@ -137,7 +130,7 @@ test("LXNS enforces exactly 15 digits before requesting and preserves leading ze
   assert.equal((await fetchPlayer(cfg,"012345678901234")).friend_code,"012345678901234")
 })
 test("LX OAuth verifies state and persists rotated refresh tokens with one concurrent refresh",async t=>{
-  const dir=mkdtempSync(path.join(tmpdir(),"sdgb-oauth-"));const store=createLxnsBindingStore(path.join(dir,"bindings.json"))
+  const store=createMemoryProviderStores().lxns
   const cfg={clientId:"app",clientSecret:"fixture",apiBase:"https://lx.test",redirectUri:"https://app.test/callback"}
   let calls=0
   t.mock.method(globalThis,"fetch",async()=>{calls++;return Response.json({access_token:"new-access",refresh_token:"new-refresh",expires_in:900,scope:"read_player write_player"})})
@@ -146,9 +139,8 @@ test("LX OAuth verifies state and persists rotated refresh tokens with one concu
   const state=new URL(session.url).searchParams.get("state")
   const token=await completeLxAuthorization(cfg,"u",session.id,`https://app.test/callback?code=abcdefgh&state=${state}`)
   assert.equal(token.refreshToken,"new-refresh")
-  store.set("u",{friendCode:"123456789012345",name:"Tester",boundAt:"",method:"oauth",accessToken:"old-access",refreshToken:"old-refresh",expiresAt:1})
+  await store.set("u",{friendCode:"123456789012345",name:"Tester",boundAt:"",method:"oauth",accessToken:"old-access",refreshToken:"old-refresh",expiresAt:1})
   await Promise.all([authorizedLxConfig(cfg,"u",store),authorizedLxConfig(cfg,"u",store)])
   assert.equal(calls,2)
-  assert.equal(createLxnsBindingStore(path.join(dir,"bindings.json")).get("u")!.refreshToken,"new-refresh")
-  rmSync(dir,{recursive:true,force:true})
+  assert.equal((await store.get("u"))!.refreshToken,"new-refresh")
 })

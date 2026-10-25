@@ -1,13 +1,14 @@
-// 渲染素材：字体（assets/fonts/*.otf）与封面磁盘缓存（.data/jacket-cache/{musicId}.png）。
+// 渲染素材：字体（assets/fonts/*.otf）与封面磁盘缓存（B50_DATA_DIR/jacket-cache/{musicId}.png）。
 // 字体：默认 NotoSansCJKsc-Regular/Bold（开源 OFL），可自行替换（保持文件名或改这里）。
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
+import { dataDir } from "../store/paths.js"
 
 const HERE = path.dirname(fileURLToPath(import.meta.url)) // src/b50 或 dist/b50
 const ROOT = path.resolve(HERE, "..", "..")               // discord-bot/
 const FONT_DIR = path.join(ROOT, "assets", "fonts")
-const CACHE_DIR = path.join(ROOT, ".data", "jacket-cache")
+const CACHE_DIR = path.join(dataDir(), "jacket-cache")
 const COVER_DIR = path.join(ROOT, "assets", "maimaiDX", "cover")
 
 export type LoadedFont = { name: string; data: Buffer; weight: 400 | 700; style: "normal" }

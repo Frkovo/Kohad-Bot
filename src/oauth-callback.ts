@@ -56,7 +56,7 @@ async function handleLxCallback(url: URL, cfg: BotConfig): Promise<Page> {
   return finish(session, t("provider.lx"), url, async (s, code) => {
     const tokens = await exchangeLxCode(oauth!, s, code)
     const player = await fetchOwnPlayer({ devToken: "", apiBase: oauth!.apiBase, accessToken: tokens.accessToken })
-    lxnsBindings.set(s.userId, { friendCode: player.friend_code, name: player.name, boundAt: new Date().toISOString(), method: "oauth",
+    await lxnsBindings.set(s.userId, { friendCode: player.friend_code, name: player.name, boundAt: new Date().toISOString(), method: "oauth",
       accessToken: tokens.accessToken, refreshToken: tokens.refreshToken, expiresAt: tokens.expiresAt, scope: tokens.scope })
     return { page: OK_PAGE, notice: t("oauth.bound", { provider: t("provider.lx"), name: player.name, detail: t("oauth.detail.friendCode", { friendCode: String(player.friend_code) }) }) }
   })
@@ -72,7 +72,7 @@ async function handleDfCallback(url: URL, cfg: BotConfig): Promise<Page> {
     const grant = await exchangeDfCode(df!, cfg.dfRedirectUri, s, code)
     const records = await fetchPlayerRecords(grant.accessToken)
     const name = records.nickname ?? records.username ?? t("value.dfPlayer")
-    dfBindings.set(s.userId, { nickname: name, boundAt: new Date().toISOString(), refreshToken: grant.refreshToken, scope: grant.scope })
+    await dfBindings.set(s.userId, { nickname: name, boundAt: new Date().toISOString(), refreshToken: grant.refreshToken, scope: grant.scope })
     return { page: OK_PAGE, notice: t("oauth.bound", { provider: t("provider.df"), name, detail: "" }) }
   })
 }

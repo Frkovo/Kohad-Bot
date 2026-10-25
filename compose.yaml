@@ -1,0 +1,65 @@
+services:
+  mysql:
+    image: mysql:8.4
+    restart: unless-stopped
+    command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci"]
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?在 .env 中设置 MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-kohad}
+      MYSQL_USER: ${MYSQL_USER:-kohad}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?在 .env 中设置 MYSQL_PASSWORD}
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u root -p$$MYSQL_ROOT_PASSWORD --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # Short-lived state only (scan de-duplication, cooldown, 水鱼 token cache); losing it costs one extra login.
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+
+  bot:
+    build: .
+    image: kohad-bot:latest
+    restart: unless-stopped
+    env_file: [.env]
+    environment:
+      MYSQL_HOST: mysql
+      MYSQL_PORT: "3306"
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-kohad}
+      MYSQL_USER: ${MYSQL_USER:-kohad}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?在 .env 中设置 MYSQL_PASSWORD}
+      REDIS_URL: redis://redis:6379/0
+      B50_DATA_DIR: /app/.data
+      # The OAuth callback listener must accept the reverse proxy's container-to-container request.
+      OAUTH_HOST: 0.0.0.0
+    volumes:
+      # Huge third-party artwork and fonts are not in the repository; mount your copy read-only.
+      - ./assets:/app/assets:ro
+      # Caches and rotating debug logs; safe to delete when the container is stopped.
+      - ./data:/app/.data
+      - ./keys.json:/app/keys.json:ro
+    ports:
+      # Reverse proxy target (https://…/oauth-callback/*). Keep it on loopback unless the proxy runs elsewhere.
+      - "127.0.0.1:${OAUTH_PORT:-3729}:3729"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+volumes:
+  mysql-data:
+  redis-data:

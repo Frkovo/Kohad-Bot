@@ -1,14 +1,14 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 import { randomBytes } from "node:crypto"
-import { mkdtempSync, readFileSync, rmSync, unlinkSync } from "node:fs"
+import { existsSync, mkdtempSync, readFileSync, rmSync, unlinkSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { DatabaseSync } from "node:sqlite"
 import { MessageFlags, type ChatInputCommandInteraction, type ModalSubmitInteraction, type StringSelectMenuInteraction, type ButtonInteraction } from "discord.js"
 import { COMMANDS_JSON } from "../src/commands.js"
 import { SERVER_CHOICES, resolveServer, UserError, type Snapshot, type ScoreRecord } from "../src/multiserver/registry.js"
-import { createServerStore, serverStore, closeServerStore, seal, unseal } from "../src/multiserver/store.js"
+import { serverStore, seal, unseal } from "../src/multiserver/store.js"
+import { loadMasterKey } from "../src/store/key.js"
 import { regionCatalog, calculateRemote, type DxData } from "../src/multiserver/catalog.js"
 import { netRating } from "../src/multiserver/rating.js"
 import { computeB50 } from "../src/b50/compute.js"
@@ -18,6 +18,7 @@ import { syncRemote, cancelSync } from "../src/multiserver/sync.js"
 import { handleServerCommand, handleServerModal, handleServerSelect, handleServerButton, handleRemoteB50 } from "../src/multiserver/interactions.js"
 import { handleB50, handleBindLx, handleBindDf } from "../src/handlers.js"
 import { createQueue } from "../src/queue.js"
+import { closeAppStore, openTestStore } from "./helpers.js"
 import type { BotConfig } from "../src/config.js"
 
 const record: ScoreRecord = { title: "Fixture", type: "DX", level: 3, achievement: 1005000, dxScore: 2900, fc: "app", fs: "fsdp", playCount: 17, ds: 14.8, version: 25, isNew: true }
@@ -28,10 +29,10 @@ function scopedEnv(values: Record<string, string | undefined>) {
   for (const [key,value] of Object.entries(values)) { if (value === undefined) delete process.env[key]; else process.env[key] = value }
   return () => { for (const [key,value] of Object.entries(before)) { if (value === undefined) delete process.env[key]; else process.env[key] = value } }
 }
-async function withStore(run: () => Promise<void>) {
-  const folder = mkdtempSync(path.join(tmpdir(), "kohad-servers-"))
-  const restore = scopedEnv({ LOCAL_SCORE_DB: path.join(folder, "scores.sqlite"), B50_AUTH_KEY: randomBytes(32).toString("base64"), B50_AUTH_KEY_FILE: undefined })
-  try { await run() } finally { closeServerStore(); restore(); rmSync(folder, { recursive: true, force: true }) }
+// Every flow test starts from an empty in-memory store, so bindings never leak between tests.
+async function withStore(run: () => Promise<void>, options: { serverPreferences?: Array<[string, string]> } = {}) {
+  await openTestStore(options)
+  try { await run() } finally { await closeAppStore() }
 }
 function interaction(name: string, options: Record<string, string | boolean | null> = {}, user = "user-a") {
   const messages: any[] = [], modals: any[] = []
@@ -77,13 +78,13 @@ test("all B50 commands expose three enabled servers; explicit choices never chan
     assert.deepEqual(option.choices.map((c: any)=>({name:c.name,value:c.value})), SERVER_CHOICES)
   }
   await withStore(async () => {
-    assert.equal(serverStore().preferred("user-a"), "cn")
+    assert.equal(await serverStore().preferred("user-a"), "cn")
     const set = interaction("server", { server: "intl" })
     await handleServerCommand(set.command, cfg)
     assert.equal(set.messages[0].flags, MessageFlags.Ephemeral)
-    assert.equal(serverStore().preferred("user-a"), "intl")
-    assert.equal(serverStore().preferred("user-b"), "cn")
-    assert.equal(resolveServer("jp", serverStore().preferred("user-a")), "jp")
+    assert.equal(await serverStore().preferred("user-a"), "intl")
+    assert.equal(await serverStore().preferred("user-b"), "cn")
+    assert.equal(resolveServer("jp", await serverStore().preferred("user-a")), "jp")
     assert.throws(() => resolveServer("https://invalid.test", "cn"), UserError)
     assert.equal(resolveServer("mumur", "cn"), "mumur")
     assert.throws(() => resolveServer("missless", "cn"), /旁路/)
@@ -91,7 +92,7 @@ test("all B50 commands expose three enabled servers; explicit choices never chan
     const query = interaction("nb50", { server: "jp" })
     await handleB50(query.command, cfg, createQueue(1), new Map())
     assert.match(query.messages[0].content, /拟合定数/)
-    assert.equal(serverStore().preferred("user-a"), "intl")
+    assert.equal(await serverStore().preferred("user-a"), "intl")
     const defaultQuery = interaction("b50")
     await handleB50(defaultQuery.command, cfg, createQueue(1), new Map())
     assert.match(defaultQuery.messages[0].content, /国际服/)
@@ -113,46 +114,44 @@ test("AES-GCM credentials cannot be swapped between users, servers or binding re
 test("server bindings persist encrypted credentials and isolate caches; rebind/unbind reject stale writes", async () => {
   await withStore(async () => {
     const store = serverStore(), auth = { password: "synthetic-private-password" }
-    const revision = store.bind("user-a","intl","account-a","Intl Player",auth)
-    store.save("user-a","intl",revision,snapshot())
-    store.bind("user-a","jp","account-b","JP Player",auth)
-    const reader = new DatabaseSync(process.env.LOCAL_SCORE_DB!)
-    try {
-      const row = reader.prepare("SELECT encrypted_auth FROM server_bindings WHERE server='intl'").get()
-      assert.equal(String(row!.encrypted_auth).includes(auth.password), false)
-    } finally { reader.close() }
-    assert.deepEqual(store.credentials("user-a","intl"),auth)
-    assert.equal(store.snapshot("user-a","jp"),null)
-    assert.equal(store.snapshot("user-b","intl"),null)
-    const next = store.bind("user-a","intl","account-c","Other Player",auth,revision)
-    assert.equal(store.snapshot("user-a","intl"),null)
-    assert.throws(() => store.save("user-a","intl",revision,snapshot()),UserError)
-    store.save("user-a","intl",next,snapshot("account-c"))
-    store.unbind("user-a","intl")
-    assert.equal(store.credentials("user-a","intl"),null)
-    store.updateCredentials("user-a","intl",next,auth)
-    assert.equal(store.credentials("user-a","intl"),null)
-    assert.equal(store.snapshot("user-a","intl")!.accountKey,"account-c")
-    assert.throws(() => store.save("user-a","intl",next,snapshot("account-c")),UserError)
-    store.unbind("user-a","missless")
-    assert.throws(() => store.bind("user-a","missless","x","x",auth,0),UserError)
-    closeServerStore()
-    assert.equal(serverStore().snapshot("user-a","intl")!.accountKey,"account-c")
-    assert.equal(serverStore().credentials("user-a","intl"),null)
+    const revision = await store.bind("user-a","intl","account-a","Intl Player",auth)
+    await store.save("user-a","intl",revision,snapshot())
+    await store.bind("user-a","jp","account-b","JP Player",auth)
+    // Credentials round-trip through the envelope, and the stored name is the card profile name.
+    assert.deepEqual(await store.credentials("user-a","intl"),auth)
+    assert.equal((await store.binding("user-a","intl"))!.name,"Intl Player")
+    assert.equal(await store.snapshot("user-a","jp"),null)
+    assert.equal(await store.snapshot("user-b","intl"),null)
+    const next = await store.bind("user-a","intl","account-c","Other Player",auth,revision)
+    assert.equal(await store.snapshot("user-a","intl"),null)
+    await assert.rejects(store.save("user-a","intl",revision,snapshot()),UserError)
+    await store.save("user-a","intl",next,snapshot("account-c"))
+    await store.unbind("user-a","intl")
+    assert.equal(await store.credentials("user-a","intl"),null)
+    await store.updateCredentials("user-a","intl",next,auth)
+    assert.equal(await store.credentials("user-a","intl"),null)
+    assert.equal((await store.snapshot("user-a","intl"))!.accountKey,"account-c")
+    await assert.rejects(store.save("user-a","intl",next,snapshot("account-c")),UserError)
+    await store.unbind("user-a","missless")
+    await assert.rejects(store.bind("user-a","missless","x","x",auth,0),UserError)
+    assert.equal((await serverStore().snapshot("user-a","intl"))!.accountKey,"account-c")
+    assert.equal(await serverStore().credentials("user-a","intl"),null)
   })
 })
 test("missing persistent master key is not regenerated over existing bindings", () => {
-  const folder = mkdtempSync(path.join(tmpdir(),"kohad-key-")), file = path.join(folder,"scores.sqlite"), keyFile = path.join(folder,"key")
-  const restore = scopedEnv({ B50_AUTH_KEY: undefined, B50_AUTH_KEY_FILE: keyFile })
-  let store = createServerStore(file)
+  const folder = mkdtempSync(path.join(tmpdir(),"kohad-key-"))
+  const keyFile = path.join(folder,"key"), restore = scopedEnv({ B50_AUTH_KEY: undefined, B50_AUTH_KEY_FILE: keyFile })
   try {
-    store.bind("u","intl","a","A",{ password:"fixture" })
+    const key = loadMasterKey({ keyFile, hasEncryptedBindings: false })
+    assert.equal(key.length,32)
     assert.equal(readFileSync(keyFile).length,32)
-    store.close(); unlinkSync(keyFile); store = createServerStore(file)
-    assert.throws(() => store.credentials("u","intl"),/密钥文件缺失/)
-  } finally { store.close(); restore(); rmSync(folder,{recursive:true,force:true}) }
-  const bad = createServerStore(":memory:",Buffer.alloc(5))
-  try { assert.throws(() => bad.bind("u","jp","a","A",{password:"fixture"}),UserError) } finally { bad.close() }
+    unlinkSync(keyFile)
+    // Existing encrypted bindings must fail closed instead of minting a replacement key.
+    assert.throws(() => loadMasterKey({ keyFile, hasEncryptedBindings: true }), /密钥文件缺失/)
+    assert.equal(existsSync(keyFile), false)
+    assert.equal(loadMasterKey({ keyFile, hasEncryptedBindings: false }).length,32)
+    assert.throws(() => loadMasterKey({ keyFile, hasEncryptedBindings: false, configured: Buffer.alloc(5).toString("base64") }),/B50_AUTH_KEY/)
+  } finally { restore(); rmSync(folder,{recursive:true,force:true}) }
 })
 test("NET catalogue applies regional availability, version constants and CiRCLE two-release B15", () => {
   const sheet = (version: string, intl = true, type = "dx") => ({ type, difficulty:"master", internalLevelValue:15, level:"15", version, regions:{jp:true,intl}, multiverInternalLevelValue:{"CiRCLE":14.8} })
@@ -290,33 +289,35 @@ test("private PC50 refuses incomplete counts and private Rating rules require ex
 test("single-flight NET sync retains old snapshot on incomplete data and discards in-flight rebind results", async t => {
     await withStore(async()=>{
       const fixture=jpFetch(),auth={username:"fixture",password:"fixture",cardIndex:2,playerName:"Player A"}
-      const store=serverStore(),key=accountKey("jp",JSON.stringify(["fixture",2])),revision=store.bind("user-a","jp",key,"Player A",auth)
-      store.save("user-a","jp",revision,snapshot(key))
+      const store=serverStore(),key=accountKey("jp",JSON.stringify(["fixture",2])),revision=await store.bind("user-a","jp",key,"Player A",auth)
+      await store.save("user-a","jp",revision,snapshot(key))
       let release!:()=>void,calls=0
       const wait=new Promise<void>(resolve=>{release=resolve})
       t.mock.method(globalThis,"fetch",async(input:any,init?:RequestInit)=>{calls++;await wait;return fixture.fetcher(input,init)})
       const first=syncRemote("user-a","jp"),second=syncRemote("user-a","jp")
+      // The job is reserved synchronously, but the first fetch happens after the credentials read settles.
+      for(let i=0;i<50&&calls===0;i++) await new Promise<void>(resolve=>setImmediate(resolve))
       assert.equal(calls,1)
       release();assert.deepEqual(await first,await second)
       assert.equal(fixture.calls.filter(c=>c.url.pathname.includes("musicGenre/search")).length,5)
       await assert.rejects(syncRemote("user-a","jp"),/不足 1 分钟/)
-      store.bind("user-a","jp",key,"Player A",auth)
+      await store.bind("user-a","jp",key,"Player A",auth)
       t.mock.restoreAll()
       t.mock.method(globalThis,"fetch",async(input:any,init?:RequestInit)=>new URL(String(input)).searchParams.get("diff")==="4"?new Response("broken page"):fixture.fetcher(input,init))
-      const old=store.snapshot("user-a","jp")
+      const old=await store.snapshot("user-a","jp")
       await assert.rejects(syncRemote("user-a","jp"),/结构无法识别/)
-      assert.deepEqual(store.snapshot("user-a","jp"),old)
-      store.bind("user-a","jp",key,"Player A",auth)
+      assert.deepEqual(await store.snapshot("user-a","jp"),old)
+      await store.bind("user-a","jp",key,"Player A",auth)
       t.mock.restoreAll()
       let finish!:()=>void
       const pending=new Promise<void>(resolve=>{finish=resolve})
       t.mock.method(globalThis,"fetch",async(input:any,init?:RequestInit)=>{await pending;return fixture.fetcher(input,init)})
       const stale=syncRemote("user-a","jp")
       cancelSync("user-a","jp")
-      store.bind("user-a","jp","new-account","New",{...auth,password:"new-fixture"})
+      await store.bind("user-a","jp","new-account","New",{...auth,password:"new-fixture"})
       finish();await assert.rejects(stale,/换绑或解绑/)
-      assert.equal(store.snapshot("user-a","jp"),null)
-      assert.equal(store.credentials("user-a","jp")!.password,"new-fixture")
+      assert.equal(await store.snapshot("user-a","jp"),null)
+      assert.equal((await store.credentials("user-a","jp"))!.password,"new-fixture")
     })
 })
 test("Discord native binding uses modal/select/confirmation; buttons enforce owner and selected card", async t => {
@@ -331,7 +332,7 @@ test("Discord native binding uses modal/select/confirmation; buttons enforce own
     Object.assign(form.value,{customId:"ms:credentials:jp",fields:{getTextInputValue:(key:string)=>fields[key as keyof typeof fields]}})
     await handleServerModal(form.value as unknown as ModalSubmitInteraction,cfg)
     const selectId=form.messages[0].components[0].toJSON().components[0].custom_id
-    assert.equal(serverStore().credentials("user-a","jp"),null) // Credentials not persisted before explicit confirmation.
+    assert.equal(await serverStore().credentials("user-a","jp"),null) // Credentials not persisted before explicit confirmation.
     const intruder=interaction("",{},"user-b")
     Object.assign(intruder.value,{customId:selectId,values:["2"]})
     await handleServerSelect(intruder.value as unknown as StringSelectMenuInteraction,cfg)
@@ -347,9 +348,9 @@ test("Discord native binding uses modal/select/confirmation; buttons enforce own
     const confirm=interaction("")
     Object.assign(confirm.value,{customId:confirmId})
     await handleServerButton(confirm.value as unknown as ButtonInteraction,cfg)
-    assert.equal(serverStore().credentials("user-a","jp")!.cardIndex,2)
-    assert.equal(serverStore().credentials("user-a","jp")!.playerName,"Player A")
-    assert.equal(serverStore().snapshot("user-a","jp")!.records.length,5)
+    assert.equal((await serverStore().credentials("user-a","jp"))!.cardIndex,2)
+    assert.equal((await serverStore().credentials("user-a","jp"))!.playerName,"Player A")
+    assert.equal((await serverStore().snapshot("user-a","jp"))!.records.length,5)
     const again=interaction("")
     Object.assign(again.value,{customId:confirmId})
     await handleServerButton(again.value as unknown as ButtonInteraction,cfg)
@@ -357,17 +358,19 @@ test("Discord native binding uses modal/select/confirmation; buttons enforce own
   })
 })
 test("DC-only legacy binding entry points never generate a browser link", async () => {
-  const df=interaction("binddf")
-  await handleBindDf(df.command,cfg)
-  assert.equal(JSON.stringify(df.messages).includes("https://"),false)
-  const lx=interaction("bindlx")
-  await handleBindLx(lx.command,{...cfg,lxDevToken:"fixture"} as BotConfig)
-  assert.equal(lx.modals[0].custom_id,"lx:bind")
-  assert.equal(JSON.stringify(lx.modals).includes("https://"),false)
+  await withStore(async () => {
+    const df=interaction("binddf")
+    await handleBindDf(df.command,cfg)
+    assert.equal(JSON.stringify(df.messages).includes("https://"),false)
+    const lx=interaction("bindlx")
+    await handleBindLx(lx.command,{...cfg,lxDevToken:"fixture"} as BotConfig)
+    assert.equal(lx.modals[0].custom_id,"lx:bind")
+    assert.equal(JSON.stringify(lx.modals).includes("https://"),false)
+  })
 })
 test("NET errors after public B50 ACK are delivered ephemerally; incomplete capabilities fail before fetching", async t => {
     await withStore(async()=>{
-      serverStore().bind("user-a","jp","fixture","Fixture",{username:"fixture",password:"synthetic-password",cardIndex:2})
+      await serverStore().bind("user-a","jp","fixture","Fixture",{username:"fixture",password:"synthetic-password",cardIndex:2})
       t.mock.method(globalThis,"fetch",async()=>new Response("synthetic-sensitive-response",{status:503}))
       const query=interaction("b50",{refresh:true,public:true})
       await handleRemoteB50(query.command,cfg,"jp")
@@ -391,23 +394,23 @@ test("NET rejects a partial five-page update without replacing the previous snap
   const fixture=jpFetch()
   await withStore(async()=>{
     const key=accountKey("jp",JSON.stringify(["fixture",2])),store=serverStore()
-    const revision=store.bind("user-a","jp",key,"Player A",{username:"fixture",password:"fixture",cardIndex:2,playerName:"Player A"})
-    store.save("user-a","jp",revision,snapshot(key))
-    const before=store.snapshot("user-a","jp")
+    const revision=await store.bind("user-a","jp",key,"Player A",{username:"fixture",password:"fixture",cardIndex:2,playerName:"Player A"})
+    await store.save("user-a","jp",revision,snapshot(key))
+    const before=await store.snapshot("user-a","jp")
     t.mock.method(globalThis,"fetch",async(input:any,init?:RequestInit)=>{
       const url=new URL(String(input))
       return url.searchParams.get("diff")==="4"?new Response("broken last page"):fixture.fetcher(input,init)
     })
     await assert.rejects(syncRemote("user-a","jp"),/结构无法识别/)
-    assert.deepEqual(store.snapshot("user-a","jp"),before)
+    assert.deepEqual(await store.snapshot("user-a","jp"),before)
   })
 })
 test("refresh:false renders stale remote cache without a network login and does not change the default server",async t=>{
     await withStore(async()=>{
-      const store=serverStore(),revision=store.bind("user-a","jp","account-a","Fixture",{username:"fixture",password:"fixture"})
+      const store=serverStore(),revision=await store.bind("user-a","jp","account-a","Fixture",{username:"fixture",password:"fixture"})
       const chart=[...regionCatalog("jp").index.values()].find(c=>c.level===3)!
-      const cached=snapshot();cached.records=[{...record,title:chart.title,type:chart.type,level:chart.level}];cached.fetchedAt="2000-01-01T00:00:00.000Z";store.save("user-a","jp",revision,cached)
-      store.setPreferred("user-a","intl")
+      const cached=snapshot();cached.records=[{...record,title:chart.title,type:chart.type,level:chart.level}];cached.fetchedAt="2000-01-01T00:00:00.000Z";await store.save("user-a","jp",revision,cached)
+      await store.setPreferred("user-a","intl")
       const calls:string[]=[]
       t.mock.method(globalThis,"fetch",(url:any)=>{calls.push(String(url));throw new Error("artwork offline fixture")})
       const query=interaction("b50",{server:"jp",refresh:false,public:true})
@@ -416,14 +419,14 @@ test("refresh:false renders stale remote cache without a network login and does 
       assert.equal(query.messages[0].files.length,1)
       assert.match(query.messages[0].embeds[0].toJSON().title,/日服/)
       assert.equal(calls.some(url=>new URL(url).hostname!=="shama.dxrating.net"),false)
-      assert.equal(store.preferred("user-a"),"intl")
+      assert.equal(await store.preferred("user-a"),"intl")
     })
 })
 test("NET maintenance during an explicit refresh renders the last local snapshot with a notice instead of failing",async t=>{
     await withStore(async()=>{
-      const store=serverStore(),revision=store.bind("user-a","jp","account-a","Fixture",{username:"fixture",password:"fixture",cardIndex:2})
+      const store=serverStore(),revision=await store.bind("user-a","jp","account-a","Fixture",{username:"fixture",password:"fixture",cardIndex:2})
       const chart=[...regionCatalog("jp").index.values()].find(c=>c.level===3)!
-      const cached=snapshot();cached.records=[{...record,title:chart.title,type:chart.type,level:chart.level}];store.save("user-a","jp",revision,cached)
+      const cached=snapshot();cached.records=[{...record,title:chart.title,type:chart.type,level:chart.level}];await store.save("user-a","jp",revision,cached)
       t.mock.method(globalThis,"fetch",async(url:any)=>{
         if(new URL(String(url)).hostname==="maimaidx.jp") return new Response("<html><head><title>メンテナンス中</title></head><body></body></html>",{status:200,headers:{"content-type":"text/html"}})
         throw new Error("artwork offline fixture")
@@ -437,15 +440,15 @@ test("NET maintenance during an explicit refresh renders the last local snapshot
 })
 test("automatic sync cannot fall back to the old account cache after an in-flight rebind",async t=>{
     await withStore(async()=>{
-      const store=serverStore(),revision=store.bind("user-a","jp","account-a","Fixture",{username:"fixture",password:"fixture",cardIndex:2})
-      const cached=snapshot();cached.fetchedAt="2000-01-01T00:00:00.000Z";store.save("user-a","jp",revision,cached)
+      const store=serverStore(),revision=await store.bind("user-a","jp","account-a","Fixture",{username:"fixture",password:"fixture",cardIndex:2})
+      const cached=snapshot();cached.fetchedAt="2000-01-01T00:00:00.000Z";await store.save("user-a","jp",revision,cached)
       let release!:()=>void
       const wait=new Promise<void>(resolve=>{release=resolve})
       t.mock.method(globalThis,"fetch",async()=>{await wait;return new Response("unavailable",{status:503})})
       const query=interaction("b50",{public:true,refresh:true})
       const running=handleRemoteB50(query.command,cfg,"jp")
       await new Promise<void>(resolve=>setImmediate(resolve))
-      store.bind("user-a","jp","new-account","New Player",{username:"fixture",password:"new-fixture",cardIndex:2})
+      await store.bind("user-a","jp","new-account","New Player",{username:"fixture",password:"new-fixture",cardIndex:2})
       release();await running
       assert.equal(query.messages.some(m=>m.files),false)
       assert.match(query.messages.find(m=>m.followUp).content,/已换绑/)
@@ -454,16 +457,17 @@ test("automatic sync cannot fall back to the old account cache after an in-fligh
 test("bypassed private servers cannot be reached from old commands, buttons, modals or configured sync endpoints",async t=>{
   const restore=scopedEnv({MISSLESS_SCORE_ENDPOINT:"https://private.fixture/read"})
   try {
-    await withStore(async()=>{
+    // Simulate a preference row written by an older version: the bypassed server must never be reachable again.
+    await openTestStore({ serverPreferences: [["user-a", "missless"]] })
+    try {
       let calls=0
       t.mock.method(globalThis,"fetch",()=>{calls++;throw new Error("bypassed server must not fetch")})
       for(const server of ["missless"] as const) {
-        const store=serverStore(),revision=store.bind("user-a",server,"account-a","Private Fixture",{accessCode:"fixture"})
-        store.save("user-a",server,revision,snapshot())
-        const writer=new DatabaseSync(process.env.LOCAL_SCORE_DB!)
-        try {writer.prepare("INSERT INTO server_preferences VALUES(?,?) ON CONFLICT(discord_id) DO UPDATE SET server=excluded.server").run("user-a",server)} finally {writer.close()}
-        assert.equal(store.preferred("user-a"),"cn")
-        assert.throws(()=>store.setPreferred("user-a",server),/旁路/)
+        const store=serverStore(),revision=await store.bind("user-a",server,"account-a","Private Fixture",{accessCode:"fixture"})
+        await store.save("user-a",server,revision,snapshot())
+        // A preference row written by an older version still resolves to cn, and nothing can set it again.
+        assert.equal(await store.preferred("user-a"),"cn")
+        await assert.rejects(store.setPreferred("user-a",server),/旁路/)
         for(const name of ["server","bind","sync","unbind"]) {
           const oldCommand=interaction(name,{server})
           await handleServerCommand(oldCommand.command,cfg)
@@ -488,10 +492,10 @@ test("bypassed private servers cannot be reached from old commands, buttons, mod
         const directQuery=interaction("b50")
         await handleRemoteB50(directQuery.command,cfg,server)
         assert.match(directQuery.messages[0].content,/旁路/)
-        assert.equal(store.snapshot("user-a",server)!.accountKey,"account-a")
-        assert.equal(store.credentials("user-a",server)!.accessCode,"fixture")
+        assert.equal((await store.snapshot("user-a",server))!.accountKey,"account-a")
+        assert.equal((await store.credentials("user-a",server))!.accessCode,"fixture")
       }
       assert.equal(calls,0)
-    })
+    } finally { await closeAppStore() }
   } finally {restore()}
 })

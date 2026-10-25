@@ -246,6 +246,8 @@
   "import.ownedByOther": "此二维码已由另一位用户提交，请使用自己的新二维码。",
   "import.alreadyDone": "✅ 此二维码已经读取，使用保存的结果，不会重复登录或同步。",
   "import.inProgress": "⏳ 此二维码正在读取和同步，将共用结果，不会重复登录。",
+  "import.remoteInProgress": "⏳ 此二维码正在另一个实例上读取和同步，请稍后重试。",
+  "import.remoteDone": "此二维码已经读取过，结果只保留在处理它的实例中，请重新扫码。",
   "import.userBusy": "你已有二维码正在读取或同步，请等待完成；查已保存的成绩无需再次扫码。",
   "import.cooldown": "扫码冷却中，请 {seconds} 秒后再提交；查已保存的成绩无需等待。",
   "import.queueFull": "当前读取队列已满，请稍后使用新二维码重试。",

@@ -85,13 +85,17 @@ B50 与帮助图通过最多 2 个后台线程生成，主线程能继续接收 
 
 [落雪开发者文档](https://maimai.lxns.net/docs/developer-guide) · [OAuth 文档](https://maimai.lxns.net/docs/oauth-guide) · [舞萌 DX API](https://maimai.lxns.net/docs/api/maimai)
 
-## 本地数据库
+## 数据存储：MySQL + Redis
 
-SQLite：默认 `.data/scores.sqlite`，可通过 `LOCAL_SCORE_DB` 指定路径。按 Discord 用户隔离，成绩主键为用户 / 游戏谱面 ID / 难度。重复拉取以累计 playCount 最大值保存，不做加法；保留最佳达成率、DX 分数、FC 和 FS。换绑到另一游戏账户时替换该 Discord 用户的旧成绩和资料，避免混号。
+玩家数据全部存 MySQL（`mysql:8.4`），Redis（`redis:7`）只放可丢失的短时状态。两者都由 `compose.yaml` 随 Bot 一起启动，不再使用内置 SQLite 或任何本地数据库文件。
 
-国服表仅保存游戏账户 ID、昵称、头像 / 姓名框编号、导入时间、成绩和次数，不保存扫码凭据或原始迁移包。远程服另存独立绑定和快照，确认后的 SEGA 凭据、Cookie／私服访问凭据按 AES-256-GCM 加密保存，详见 [多服务器接入说明](MULTI_SERVER.md)。落雪既有 OAuth 凭据另存 `.data/lxns-bindings.json`，该目录不可提交或分享。
+- **MySQL**：`accounts` / `scores` 保存国服导入的成绩、次数和玩家资料；`server_preferences` / `server_bindings` / `server_snapshots` 保存多服务器偏好、绑定与快照；`df_bindings` / `df_import_tokens` / `lxns_bindings` 保存水鱼与落雪的凭据。表结构在启动时按 `CREATE TABLE IF NOT EXISTS` 幂等创建。
+- 按 Discord 用户隔离，成绩主键为用户 / 游戏谱面 ID / 难度。重复拉取以累计 playCount 最大值保存，不做加法；保留最佳达成率、DX 分数、FC 和 FS。换绑到另一游戏账户时替换该 Discord 用户的旧成绩和资料，避免混号。
+- 国服成绩表仅保存游戏账户 ID、昵称、头像 / 姓名框编号、导入时间、成绩和次数，不保存扫码凭据或原始迁移包。确认后的 SEGA 凭据、Cookie／私服访问凭据按 AES-256-GCM 加密后写入 `server_bindings.encrypted_auth`，详见 [多服务器接入说明](MULTI_SERVER.md)。
+- **Redis**：扫码去重（同一张二维码 15 分钟内只拉取一次）、每用户扫码冷却、水鱼访问令牌缓存。丢了 Redis 只会多一次登录 / 扫码，不会丢玩家数据。
+- 渲染缓存与排障日志在 `B50_DATA_DIR`（容器内 `/app/.data`，宿主机 `./data`），可以随时删除；玩家数据不在其中。
 
-备份时先停止机器人再复制 `.data/`（SQLite 使用 WAL；运行中只复制主文件可能丢失最近写入）。移机需携带 `assets/`、`.data/`、原有绑定加密密钥和独立保存的 `.env`。
+备份：`docker compose exec mysql mysqldump -u root -p"$MYSQL_ROOT_PASSWORD" "$MYSQL_DATABASE" > kohad.sql`，并单独保存 `B50_AUTH_KEY`（或 `binding-master.key`）——没有原密钥，已加密的远程服凭据无法解密。移机需携带 `assets/`、数据库导出、原密钥和独立保存的 `.env`。
 
 ## maimai NET 证书（JP / 国际服传输）
 
@@ -105,37 +109,46 @@ SQLite：默认 `.data/scores.sqlite`，可通过 `LOCAL_SCORE_DB` 指定路径�
 
 - 失败回复会附带排查编号（如 `B50-1A2B3C4D`），同一编号也写入控制台 `[bot-debug]` 与日志文件，可直接搜索。
 - 绑定、首次同步、主动刷新和自动刷新失败均报告具体阶段。已保存绑定而首次同步失败时可 `/sync` 重试；自动刷新失败但有缓存时仍发送缓存成绩图，并私密发送失败详情。国服迁移失败也有排查编号；迁移服务的自由文本错误不会回显到 Discord。
-- 日志文件：`.data/logs/bot-debug.jsonl`（位于 `LOCAL_SCORE_DB` 所在目录的 `logs/` 下）。记录操作阶段、耗时、HTTP 状态、Cookie 数量、页面结构计数、难度与记录数，以及固定路由名和允许的域名。不会记录账号、密码、Cookie 值、Token、请求体、完整 URL（含跳转参数）、响应 HTML 或原始异常堆栈。
+- 日志文件：`B50_DATA_DIR/logs/bot-debug.jsonl`（容器内即 `/app/.data/logs/`，宿主机 `./data/logs/`）。记录操作阶段、耗时、HTTP 状态、Cookie 数量、页面结构计数、难度与记录数，以及固定路由名和允许的域名。不会记录账号、密码、Cookie 值、Token、请求体、完整 URL（含跳转参数）、响应 HTML 或原始异常堆栈。
 - 轮转：单个文件达到 5 MB 时改名为 `bot-debug.jsonl.1` 并新建文件，只保留一个备份，总占用约 10 MB 以内。
 - 关闭文件日志：在 `.env` 设置 `B50_DEBUG_LOG=off`（控制台仍输出安全元数据）；改用其他路径：`B50_DEBUG_LOG=<路径>`。
 - 文案统一在根目录 `keys.json`。`keys.json` 是部署文件之一，需与 `.env`、`assets/`、`.data/` 一起保留。修改后必须重启 Bot（程序不会自动重启）；缺失的 key 或占位参数会直接报错，避免发出残缺文字。
 - `keys.json` 使用扁平的语义 key，例如 `bind.field.password`、`progress.readingDifficulty`、`diagnostic.details`；只修改右侧文字，保留 `{server}`、`{count}` 等占位参数。范围包含命令描述和选项、回复、按钮/弹窗、帮助图、B50 图上的文字及错误提示。歌曲名、玩家名和服务器返回的数值作为参数传入。
 - 密码框限制：Discord 原生 TextInput 只有 Short / Paragraph 两种样式，没有密码类型，无法遮罩。密码框标题已注明“此输入框不遮罩”，输入内容不会回显到回复或日志中。
 
-## 启动与验证
+## 启动：Docker Compose
 
-需要 **Node.js ≥22.13**，推荐当前 LTS；内置 SQLite 无需另装数据库服务。
+运行时只需要 Docker（Compose v2）；MySQL 与 Redis 由 compose 一并启动，Bot 镜像里没有 Node 运行时以外的构建工具。数据库要求 **MySQL ≥ 8.0.19**（`compose.yaml` 固定 `mysql:8.4` LTS）。
 
-1. 复制 `.env.example` 到 `.env`，填写 Discord、迁移服务和所需查分器凭据。
+1. 复制 `.env.example` 到 `.env`，填写 `DISCORD_TOKEN`、`MIGRATE_URL`、`MYSQL_PASSWORD`、`MYSQL_ROOT_PASSWORD` 和所需查分器凭据。
 2. 在 Discord Developer Portal 创建机器人，邀请权限包含 Send Messages、Embed Links、Attach Files 和 applications.commands。
-3. 安装依赖后运行：
+3. `assets/` 不随仓库分发（曲绘、字体与第三方数据的版权原因），把现有的 `assets/` 放在项目根目录；compose 会只读挂载到 `/app/assets`。
+4. 启动并查看日志：
+
+```powershell
+docker compose up -d --build
+docker compose logs -f bot
+```
+
+`bot` 会等 MySQL 与 Redis 健康后启动，启动时幂等建表并差量注册 13 个命令。代码改动后重新 `docker compose up -d --build` 即可；容器收到 `SIGTERM` 会先关闭 MySQL 连接池与 Redis。
+
+OAuth 回调监听在容器内 `0.0.0.0:3729`，compose 默认只映射到宿主机 `127.0.0.1:3729`，由反向代理转发 `https://<域名>/oauth-callback/*`；`OAUTH_PORT` 可改宿主机端口，`OAUTH_PUBLIC_BASE` 必须与查分器面板登记的回调一致。
+
+数据卷：`mysql-data`、`redis-data` 由 Docker 管理，`./data` 只存渲染缓存与轮转日志。`docker compose down` 保留数据卷；`down -v` 会连同 MySQL 数据一起删除。
+
+### 本地开发
+
+不必每次都重建镜像：装好 Node.js ≥22.13 与可访问的 MySQL / Redis（可用 `docker compose up -d mysql redis`），设置好 `.env` 后运行 `npm run dev`。`npm run build && npm start` 等价于容器内启动。
 
 ```powershell
 npm install
-npm run build
-npm start
-```
-
-开发运行 `npm run dev`。启动时自动差量注册 13 个命令，并移除已合并 / 改名的旧命令；代码编译完成后，已运行的 `node dist/index.js` 需要重启才能载入改动。
-
-迁移服务的 `server/dist/` 也需要同步并重启，才能启用请求 Cookie 隔离、多人并发和登录预览资料补全。已导入的旧账户若没有姓名框编号，需要重新扫码导入一次。二维码链接在 bot 内转换为标准文本，输入格式也兼容旧迁移服务；旧服务仍只支持串行读取。
-
-```powershell
 npm test
 npm run preview
 ```
 
-预览仅使用公开曲库和演示成绩，生成 `.data/previews/b50-preview.png`、`nb50-preview.png`、`pc50-preview.png` 与 `help-preview.png`；不会把演示成绩写入玩家数据库。
+`npm run check:sql` 用 SQL 解析器静态检查 `src/store` 里的 MySQL 语句，不需要数据库。测试默认使用内存实现，不需要数据库；要验证真实 SQL，把 `MYSQL_URL` 指向一个可随意写的库后运行 `npm test`，`test/store.test.ts` 的 MySQL 契约用例会真正执行（否则自动跳过）。预览仅使用公开曲库和演示成绩，生成 `B50_DATA_DIR/previews/` 下的预览图，不会写入玩家数据库。
+
+迁移服务的 `server/dist/` 也需要同步并重启（本仓库只包含 Bot）。已导入的旧账户若没有姓名框编号，需要重新扫码导入一次。二维码链接在 bot 内转换为标准文本，输入格式也兼容旧迁移服务；旧服务仍只支持串行读取。
 
 ## 配置
 
@@ -150,12 +163,16 @@ npm run preview
 | COOLDOWN_SECONDS | 每用户新扫码冷却，默认 30；不限制本地查图 / 帮助 / 重复二维码 |
 | PULL_CONCURRENCY / MAX_PENDING_READS | Bot 机台读取并发默认 3 / 总待处理默认 9；与服务端并发配置协调 |
 | MAX_ATTACHMENT_MB | 导出附件阈值，默认 7MB，超限压缩 / 分片 |
+| MYSQL_URL 或 MYSQL_HOST / MYSQL_PORT / MYSQL_DATABASE / MYSQL_USER / MYSQL_PASSWORD | 玩家数据库；`MYSQL_URL` 优先 |
+| MYSQL_POOL_SIZE | 连接池上限，默认 5（2–10） |
+| REDIS_URL | 扫码去重 / 冷却 / 令牌缓存，默认 `redis://127.0.0.1:6379/0` |
+| B50_DATA_DIR | 渲染缓存与日志目录，默认 `<项目>/.data` |
+| B50_AUTH_KEY / B50_AUTH_KEY_FILE | 远程服凭据加密密钥（32 字节 Base64 或密钥文件）；务必单独备份 |
 | DF_CLIENT_ID / DF_CLIENT_SECRET | 水鱼 OAuth 应用凭据 |
 | DF_AUTH_URL / DF_SCOPE | 默认水鱼鉴权地址；scope 默认 prober.records.read prober.records.write |
 | LX_DEV_TOKEN / LX_API_BASE | 落雪开发者密钥；默认 https://maimai.lxns.net |
 | LX_CLIENT_ID / LX_CLIENT_SECRET / LX_REDIRECT_URI | 落雪 OAuth 应用与回调配置 |
 | B50_NEW_VERSION | 当前内容系列默认 25500，国服 ROM 1.56.00 |
-| LOCAL_SCORE_DB | 默认 .data/scores.sqlite |
 
 服务端 `MIGRATE_CONCURRENCY` 配置在 `server/.env` 或其进程环境，默认 3。首次上线仍需真实多人扫码验收上游机台行为；自动测试使用模拟请求，不消耗真实二维码。
 

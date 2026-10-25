@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto"
 import { existsSync, mkdirSync, openSync, readFileSync, readSync, writeFileSync } from "node:fs"
+import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { Worker } from "node:worker_threads"
 import { createRequire } from "node:module"
@@ -7,9 +8,10 @@ import { inflateRawSync } from "node:zlib"
 import sharp from "sharp"
 import { t } from "../messages.js"
 import { UserError } from "../multiserver/registry.js"
+import { dataDir } from "../store/paths.js"
 
 const ROOT = fileURLToPath(new URL("../../assets/", import.meta.url))
-const IMAGE_CACHE = fileURLToPath(new URL("../../.data/img-cache/", import.meta.url))
+const IMAGE_CACHE = path.join(dataDir(), "img-cache")
 // The SVG is laid out at 1400×1600 and rasterized at RENDER_ZOOM (2800×3200, ~1.6MB WebP), or HD_ZOOM when the
 // player asks for it (5600×6400, ~4.6MB, about 4× the CPU time and ~1GB peak memory, so HD renders run one at a time).
 export const RENDER_ZOOM = Number(process.env.B50_RENDER_ZOOM) || 2

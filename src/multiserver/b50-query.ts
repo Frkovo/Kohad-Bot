@@ -36,32 +36,32 @@ export function b50Request(interaction: ChatInputCommandInteraction, importing =
   }
 }
 
-/** Where a player's data lives. Injected in tests so they do not depend on local binding files. */
+/** Where a player's data lives. Injected in tests so they do not depend on the database. */
 export type DataSources = {
   /** A local import record, or a 水鱼 / 落雪 binding: all of them count as cn data. */
-  cnData(userId: string): boolean
+  cnData(userId: string): Promise<boolean>
   /** Servers with live credentials. Unbound servers keep snapshots but do not count. */
-  remoteBound(userId: string): RemoteServer[]
+  remoteBound(userId: string): Promise<RemoteServer[]>
 }
 export const defaultDataSources: DataSources = {
-  cnData: userId => scoreDatabase().has(userId) || !!dfBindings.get(userId) || !!lxnsBindings.get(userId),
+  cnData: async userId => (await scoreDatabase().has(userId)) || !!(await dfBindings.get(userId)) || !!(await lxnsBindings.get(userId)),
   remoteBound: userId => serverStore().boundServers(userId),
 }
 
 /** Enabled servers where this player has usable data, cn first. */
-export function dataServersFor(userId: string, sources: DataSources = defaultDataSources): ServerId[] {
-  const servers: ServerId[] = sources.cnData(userId) ? ["cn"] : []
-  return [...servers, ...sources.remoteBound(userId)].filter(isEnabledServer)
+export async function dataServersFor(userId: string, sources: DataSources = defaultDataSources): Promise<ServerId[]> {
+  const servers: ServerId[] = (await sources.cnData(userId)) ? ["cn"] : []
+  return [...servers, ...await sources.remoteBound(userId)].filter(isEnabledServer)
 }
 
 /**
  * An explicit server option wins. sgwcmaid and source:df|lxns can only be cn inputs, so they imply cn.
  * Otherwise the saved /server default, then the single server with data. Returns null when the player must choose.
  */
-export function resolveB50Query(req: B50Request, sources: DataSources = defaultDataSources): B50Target | null {
+export async function resolveB50Query(req: B50Request, sources: DataSources = defaultDataSources): Promise<B50Target | null> {
   const cnOnly = !req.explicit && (!!req.sgwcmaid || req.source === "df" || req.source === "lxns")
   const explicit = cnOnly ? "cn" : req.explicit
-  const saved = serverStore().savedPreferred(req.userId)
-  const server = resolveB50Server(explicit, saved, explicit || saved ? [] : dataServersFor(req.userId, sources))
+  const saved = await serverStore().savedPreferred(req.userId)
+  const server = resolveB50Server(explicit, saved, explicit || saved ? [] : await dataServersFor(req.userId, sources))
   return server ? { server, fromData: !explicit && !saved } : null
 }

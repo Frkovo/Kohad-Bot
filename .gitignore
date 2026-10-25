@@ -4,7 +4,9 @@ dist/
 .env.*
 !.env.example
 .data/
+data/
 reference/
+*.key
 
 # Large or third-party game assets and local runtime data (not redistributed)
 test.zip
@@ -15,9 +17,7 @@ assets/data/df-music.json
 assets/data/sdgb-156-charts.json
 assets/data/fit-stats.json
 assets/data/lxns-25500.json
-*.key
 *.sqlite
 *.sqlite-*
 *.jsonl
 *.log
-deploy-askpass-*.cmd

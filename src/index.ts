@@ -17,8 +17,11 @@ import { syncFields, type SyncResult } from "./sync.js"
 import { handleServerCommand, handleServerSelect } from "./multiserver/interactions.js"
 import { t } from "./messages.js"
 import { Trace } from "./diagnostics.js"
+import { closeAppStore, openAppStore } from "./store/index.js"
 
 const cfg = loadConfig()
+// MySQL and Redis start alongside the bot in Compose; wait for them before registering commands.
+await openAppStore({ log: message => console.warn(message) })
 const queue = createQueue(cfg.maxPendingReads, cfg.pullConcurrency)
 const lastUsed = new Map<string, number>()
 
@@ -211,4 +214,16 @@ client.on(Events.InteractionCreate, (interaction) => {
 })
 
 startOAuthServer(cfg)
+
+// Close MySQL and Redis on the orchestrator's stop signal so restarts never leave sessions behind.
+for (const signal of ["SIGTERM", "SIGINT"] as const) {
+  process.once(signal, () => {
+    console.log(`[bot] ${signal} received, shutting down`)
+    void (async () => {
+      try { client.destroy() } catch { /* already logged out */ }
+      await closeAppStore().catch(error => console.warn(`[bot] store close failed: ${(error as Error).message}`))
+      process.exit(0)
+    })()
+  })
+}
 await client.login(cfg.token)
