@@ -196,7 +196,7 @@ export async function resolveImages(svg: string, zoom = RENDER_ZOOM) {
     // A prescaled HD background (5600×6400) would cost far more memory than resvg's own upscale saves in time.
     if (w * h > MAX_PRESCALE_PIXELS || scaledImages.has(key) || wanted.has(key)) continue
     imageHashes[id] ??= createHash("sha1").update(imageSources[id]).digest("hex")
-    const file = `${IMAGE_CACHE}${imageHashes[id]}-${w}x${h}.png`
+    const file = path.join(IMAGE_CACHE, `${imageHashes[id]}-${w}x${h}.png`)
     try {
       if (existsSync(file)) { rememberScaled(key, `data:image/png;base64,${readFileSync(file).toString("base64")}`); continue }
     } catch { /* rebuild below */ }

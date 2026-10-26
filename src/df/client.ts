@@ -107,12 +107,12 @@ export async function fetchPlayerRecords(token: string | { importToken: string }
 }
 
 export type UpdateAuth = { token?: string; importToken?: string }
-export type UpdateResult = { ok: boolean; status: number; message: string }
+export type UpdateResult = { ok: boolean; status: number; message: string; accepted?: number }
 
 // 水鱼文档未给 update_records 的单次上限；整包一次提交疑似触发服务端 500，故分片顺序提交
 export const UPDATE_CHUNK = 100
 
-async function postRecordsBatch(records: unknown[], auth: UpdateAuth): Promise<{ ok: boolean; status: number }> {
+async function postRecordsBatch(records: unknown[], auth: UpdateAuth): Promise<{ ok: boolean; status: number; accepted?: number }> {
   const headers: Record<string, string> = { "content-type": "application/json", accept: "application/json" }
   if (auth.token) headers.authorization = `Bearer ${auth.token}`
   else if (auth.importToken) headers["Import-Token"] = auth.importToken
@@ -122,18 +122,29 @@ async function postRecordsBatch(records: unknown[], auth: UpdateAuth): Promise<{
     body: JSON.stringify(records),
     signal: AbortSignal.timeout(120000),
   })
+  // The server reports how many records it matched ({updates, creates}); unmatched songs are silently ignored.
+  let accepted: number | undefined
+  if (res.ok) {
+    try {
+      const body = await res.json() as { updates?: unknown; creates?: unknown }
+      const updates = Number(body?.updates), creates = Number(body?.creates)
+      if (Number.isFinite(updates) || Number.isFinite(creates)) accepted = (Number.isFinite(updates) ? updates : 0) + (Number.isFinite(creates) ? creates : 0)
+    } catch { /* older server returns no body */ }
+  }
   // Don't echo arbitrary response bodies which can reflect request credentials.
-  return { ok: res.ok, status: res.status }
+  return { ok: res.ok, status: res.status, accepted }
 }
 
 /** 上传成绩（update_records）：records 为水鱼导入格式（pu.pu 同款映射见 df/upload.ts）。按 UPDATE_CHUNK 顺序分片，任一片被拒即停止，不再继续写入 */
 export async function updateRecords(records: unknown[], auth: UpdateAuth): Promise<UpdateResult> {
   const total = Math.ceil(records.length / UPDATE_CHUNK)
+  let accepted = 0, counted = false
   for (let i = 0, batch = 1; i < records.length; i += UPDATE_CHUNK, batch++) {
     const res = await postRecordsBatch(records.slice(i, i + UPDATE_CHUNK), auth)
     if (!res.ok) {
-      return { ok: false, status: res.status, message: t("df.upload.partial", { batch, total, status: res.status, sent: i, hint: res.status === 401 || res.status === 403 ? t("df.upload.authHint") : "" }) }
+      return { ok: false, status: res.status, message: t("df.upload.partial", { batch, total, status: res.status, sent: i, hint: res.status === 401 || res.status === 403 ? t("df.upload.authHint") : "" }), accepted: counted ? accepted : undefined }
     }
+    if (res.accepted !== undefined) { accepted += res.accepted; counted = true }
   }
-  return { ok: true, status: 200, message: t("df.upload.accepted") }
+  return { ok: true, status: 200, message: t("df.upload.accepted"), accepted: counted ? accepted : undefined }
 }

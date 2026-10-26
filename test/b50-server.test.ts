@@ -8,6 +8,8 @@ import { handleServerCommand } from "../src/multiserver/interactions.js"
 import { handleB50, handleB50Pick } from "../src/handlers.js"
 import { createQueue } from "../src/queue.js"
 import { closeAppStore, openTestStore } from "./helpers.js"
+import { dfImportTokens } from "../src/df/import-token.js"
+import { t } from "../src/messages.js"
 import type { BotConfig } from "../src/config.js"
 
 // One in-memory store for the file: the store is a process-wide singleton, so it cannot change per test.
@@ -114,6 +116,24 @@ test("a saved /server default skips the prompt", async () => {
   await handleB50(query.command, cfg, createQueue(1), new Map())
   assert.equal(query.messages.length, 1)
   assert.match(query.messages[0].content, /尚未绑定国际服/)
+})
+
+test("国服 with nothing imported offers the three import paths instead of failing", async () => {
+  const user = "b50-empty-user"
+  await serverStore().setPreferred(user, "cn")
+  const query = interaction("b50", {}, user)
+  await handleB50(query.command, cfg, createQueue(1), new Map())
+  assert.equal(query.messages.length, 1)
+  assert.equal(query.messages[0].content, t("b50.noData"))
+  assert.equal(query.messages[0].flags, MessageFlags.Ephemeral)
+  const buttons = query.messages[0].components[0].toJSON().components.map((component: { custom_id: string; label: string }) => [component.custom_id, component.label])
+  assert.deepEqual(buttons, [["lx:rebind", t("b50.import.lx")], ["dfimport:open", t("b50.import.df")], ["ms:bind:cn", t("b50.import.maid")]])
+
+  // An import token alone means the player already chose 水鱼, so the prompt must not repeat.
+  await dfImportTokens.set(user, "fixture-import-token")
+  const again = interaction("b50", {}, user)
+  await handleB50(again.command, cfg, createQueue(1), new Map())
+  assert.notEqual(again.messages[0].content, t("b50.noData"))
 })
 
 test("/b50 with no manual choice and no single server asks privately; the pick saves the default and resumes", async () => {

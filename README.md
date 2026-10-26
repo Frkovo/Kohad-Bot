@@ -26,6 +26,8 @@
 
 二维码一次性，刷新成绩时需要新的二维码；查询已有本地数据无需扫码。15 分钟内的重复二维码共用一次拉取、保存与同步结果；只在内存保存二维码摘要与临时结果，不保存原二维码。正在扫描时，同一用户的另一张二维码会立即提示忙；本地成绩查询与帮助仍可使用。旧 `/import` 合并进 `/upload`，旧 `/fitb50` 改为 `/nb50`，不再注册旧名；Discord 尚未刷新的旧命令会转入新流程。
 
+国服没有任何可读数据时（既没扫过码，也没绑定水鱼 / 落雪，连 Import-Token 都没有），`/b50`、`/nb50`、`/pc50` 不再直接报错，而是私密回复「你没有绑定任何数据，请选择以下三种方案导入：」并给出 **落雪**（好友码 / OAuth）、**水鱼**（Import-Token）和 **MAID**（国服二维码）三个按钮，各自进入原有的绑定流程。
+
 可选 sgwcmaid 一旦填写，优先使用本次导入的本地成绩。自动 B50 数据源顺序为水鱼完整成绩 → 落雪 → 本地数据库。
 
 所有扫码参数均支持：完整 84 位 `SGWCMAID…`、去掉 SGWC 的 80 位 `MAID…`、去掉完整前缀的时间戳 + 64 位十六进制内容，以及 `https://wq.wahlap.net/qrcode/req/MAID….html?...` 华立二维码链接（包括 Markdown 链接形式）。程序只在本地解析路径，忽略链接查询参数，不访问或提前消费二维码链接。
@@ -77,11 +79,13 @@ B50 与帮助图通过最多 2 个后台线程生成，主线程能继续接收 
 
 好友码模式：填写 `LX_DEV_TOKEN`，执行 `/bindlx method:friend_code`。输入游戏 NET「好友」页的 **15 位好友码**，不是 Aime 卡号、玩家 ID 或 SGWCMAID。全角数字和空格自动归一，前导零保留，12 位 / 16 位不接受。对应玩家需要已在落雪同步，应用需要读取玩家 / 成绩和写入数据权限。
 
-已有 OAuth 绑定保留 `LX_CLIENT_ID / LX_CLIENT_SECRET / LX_REDIRECT_URI` 配置用于续期。新的 `/bindlx` 和旧按钮的换绑操作统一使用好友码弹窗，不再提供网页授权入口。
+网页 OAuth 模式：在落雪开发者面板创建 OAuth 应用并登记回调地址，然后填写 `LX_CLIENT_ID`、`LX_CLIENT_SECRET`；回调默认 `${OAUTH_PUBLIC_BASE}/oauth-callback/lxns`，必须与面板登记地址完全一致，且由反向代理转发到 Bot 的 `OAUTH_PORT`。**只填 `LX_DEV_TOKEN` 时 `/bindlx` 只有好友码弹窗，不会出现 OAuth 授权按钮**——这是没配 OAuth 应用时最容易误解的地方。
 
 开发者密钥请求使用 `Authorization: <密钥>` 和 `/api/v0/maimai/player/{friend_code}`；用户 OAuth 使用 `Authorization: Bearer <token>` 和 `/api/v0/user/maimai/player`，两者不会混用。
 
 上传每批最多 500 条；429 / 5xx 退避重试一次；水鱼和落雪独立执行。OAuth 成绩上传后完整回读核对；落雪好友码模式抽查最多 3 条，并明确显示「抽查」。回读不可用或尚未同步时报告「上传已接受，尚未核实」，不把提交成功当成核对通过。
+
+曲库未知的谱面不会静默丢弃：水鱼按本地曲库快照（`assets/data/sdgb-156-charts.json`）补歌曲名后照常提交，并报告水鱼实际匹配了多少条（它不认识歌名时会忽略）；落雪按 `id ≥ 10000 → DX(id-10000)` 的规则换算后照常提交，已知谱面排在前面的批次，只有真正无效的数据（0 分、难度越界、无 ID）才计入跳过。
 
 [落雪开发者文档](https://maimai.lxns.net/docs/developer-guide) · [OAuth 文档](https://maimai.lxns.net/docs/oauth-guide) · [舞萌 DX API](https://maimai.lxns.net/docs/api/maimai)
 
@@ -135,6 +139,37 @@ docker compose logs -f bot
 OAuth 回调监听在容器内 `0.0.0.0:3729`，compose 默认只映射到宿主机 `127.0.0.1:3729`，由反向代理转发 `https://<域名>/oauth-callback/*`；`OAUTH_PORT` 可改宿主机端口，`OAUTH_PUBLIC_BASE` 必须与查分器面板登记的回调一致。
 
 数据卷：`mysql-data`、`redis-data` 由 Docker 管理，`./data` 只存渲染缓存与轮转日志。`docker compose down` 保留数据卷；`down -v` 会连同 MySQL 数据一起删除。
+
+### 远程部署（SSH + Docker，无需镜像仓库）
+
+`npm run deploy` 把当前 checkout 打包（源码、compose、keys.json、assets/data、certs、fonts）通过 tar-over-ssh 送到服务器，再执行 `docker compose up -d --build`。artwork 默认只在远端不完整时上传，避免每次都传 400 MB。
+
+```dotenv
+DEPLOY_HOST=your-server.example     # 必填
+DEPLOY_USER=root
+DEPLOY_DIR=/opt/kohad-bot
+DEPLOY_KEY=C:\Users\you\.ssh\deploy-key
+# DEPLOY_PASSWORD=...               # 没有密钥时使用
+# DEPLOY_FULL_ASSETS=1              # 强制重新上传 assets/maimaiDX
+```
+
+脚本会先比对本地与远端的 `assets` 文件数（cover / pic / fonts / data），部署后再比对一次并打印差异——「远端缺歌」会直接显示成缺多少文件，而不是等用户发现图不对。服务器上的 `.env` 与 `compose.baota.yaml` 不会被覆盖；后者存在时会自动叠加为 `-f compose.yaml -f compose.baota.yaml`。
+
+### 从旧版（SQLite + JSON）迁移数据
+
+旧部署的 `.data/scores.sqlite`、`df-bindings.json`、`df-import-tokens.json`、`lxns-bindings.json` 不会自动进入 MySQL。`npm run migrate:legacy` 读取这些文件并写入 MySQL，可重复执行：
+
+```powershell
+# 先干跑：只解析与校验，不写数据库
+node scripts/migrate-legacy.mjs --data-dir <旧 .data> --new-key-file <新 binding-master.key> --dry-run
+# 正式写入（B50_AUTH_KEY / MYSQL_URL 与 Bot 使用同一套环境变量）
+node scripts/migrate-legacy.mjs --data-dir <旧 .data> --new-key-file <新 binding-master.key>
+```
+
+- 账号与成绩按运行时同样的规则合并（playCount / 达成率 / FC / FS 取最优，换游戏账号则替换旧成绩），不会覆盖目标库更新的数据。
+- 远程服凭据会用旧密钥解密、再用目标密钥重新加密（AAD 仍为 user/server/revision）；目标库已存在的同键绑定保留目标版本。
+- 水鱼 / 落雪绑定在目标库已存在时保留目标版本；输出只打印数量，不打印任何令牌。
+- 缺少密钥、旧库结构不对时会直接失败，不会写入半套数据。
 
 ### 本地开发
 

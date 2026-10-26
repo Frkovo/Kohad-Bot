@@ -52,20 +52,26 @@ test("buildLxnsUploadPlan maps ids/types per LXNS model (incl. utage)", () => {
   assert.deepEqual(byId.get("100508:utage"), { id: 100508, type: "utage", level_index: 0, achievements: 196.2659, fc: null, fs: "sync", dx_score: 2138 })
 })
 
-test("buildLxnsUploadPlan skips invalid records and unknown charts", () => {
+test("buildLxnsUploadPlan keeps invalid records out but submits unknown charts anyway", () => {
   const plan = buildLxnsUploadPlan(pullWith([
     { musicId: 0, level: 3, achievement: 1_000_000 },      // 无效 id
     { musicId: 30, level: 9, achievement: 1_000_000 },     // level 越界
     { musicId: 30, level: 3, achievement: 0 },             // 0 分
-    { musicId: 10030, level: 4, achievement: 1_000_000 },  // base 30 无 level 4 dx
-    { musicId: 99999, level: 3, achievement: 1_000_000 },  // base 89999 不存在
-    { musicId: 100999, level: 0, achievement: 1_000_000 }, // 宴谱不在曲库
-    { musicId: 8, level: 3, achievement: 1_000_000, deluxscoreMax: 1, comboStatus: 0, syncStatus: 0 }, // 有效
+    { musicId: 10030, level: 4, achievement: 1_000_000 },  // base 30 无 level 4 dx：仍按 dx 上传
+    { musicId: 99999, level: 3, achievement: 1_000_000 },  // 曲库没有：仍按 DX(89999) 上传
+    { musicId: 100999, level: 0, achievement: 1_000_000 }, // 宴谱不在曲库：仍按 utage 上传
+    { musicId: 8, level: 3, achievement: 1_000_000, deluxscoreMax: 1, comboStatus: 0, syncStatus: 0 }, // 有效且已知
   ]), songs)
-  assert.equal(plan.mapped, 1)
+  assert.equal(plan.mapped, 4)
   assert.equal(plan.total, 7)
+  assert.equal(plan.unknown, 3)
   assert.equal(plan.skipped.find(s => s.reason === "无效记录")?.count, 3)
-  assert.equal(plan.skipped.find(s => s.reason === "落雪曲库缺失")?.count, 3)
+  assert.equal(plan.skipped.find(s => s.reason === "落雪曲库缺失"), undefined)
+  // Known charts are sent first so a rejected unknown batch cannot block them.
+  // 99999 ≥ 10000 is the DX id (89999) by the game's +10000 convention.
+  assert.deepEqual(plan.scores.map(s => `${s.id}:${s.type}:${s.level_index}`), [
+    "8:standard:3", "30:dx:4", "89999:dx:3", "100999:utage:0",
+  ])
 })
 
 test("buildChartPresence marks standard/dx/utage", () => {

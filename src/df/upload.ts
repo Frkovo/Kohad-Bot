@@ -1,7 +1,7 @@
 // 迁移包 → 水鱼 update_records 记录（规则与 scripts 时代 pu.pu 同源）
-// 过滤：musicId>0、achievement>0、必须命中水鱼曲库；普通谱面 level 0-4，宴谱（id≥100000）level_index 固定 0
+// 过滤：musicId>0、achievement>0；名称优先取水鱼曲库，缺失时回退本地曲库快照（不因曲库滞后丢成绩）
 // 宴谱：水鱼建模为 type=DX + level_index 0（官方参考数据 /player/test_data 实证，level_label="Utage"）
-// 映射：achievements=ach/10000、dxScore=deluxscoreMax、fc/fs 枚举、title/type 取自水鱼曲库
+// 映射：achievements=ach/10000、dxScore=deluxscoreMax、fc/fs 枚举、title/type 取自曲库
 import type { DfMusic } from "./client.js"
 
 export type DfUploadRecord = {
@@ -44,7 +44,7 @@ export function extractMusicDetails(pull: unknown): RawDetail[] {
   return out
 }
 
-export function buildUploadPlan(pull: unknown, catalog: Map<number, DfMusic>): UploadPlan {
+export function buildUploadPlan(pull: unknown, catalog: Map<number, DfMusic>, fallback: Map<number, { title: string; type: string }> = new Map()): UploadPlan {
   const details = extractMusicDetails(pull)
   const records: DfUploadRecord[] = []
   const skip = new Map<string, { count: number; samples: string[] }>()
@@ -61,8 +61,9 @@ export function buildUploadPlan(pull: unknown, catalog: Map<number, DfMusic>): U
       addSkip("无效记录", `${d.musicId ?? "?"}:${d.level ?? "?"}`)
       continue
     }
-    const song = catalog.get(mid)
-    if (!song) { addSkip("水鱼曲库缺失", String(mid)); continue }
+    // The prober catalog is authoritative; the local game snapshot supplies titles for songs 水鱼 does not list yet.
+    const song = catalog.get(mid) ?? fallback.get(mid)
+    if (!song) { addSkip("缺少歌曲名称", String(mid)); continue }
     // 宴谱（id≥100000）：type 用曲库值（DX）+ level_index 固定 0；普通谱面校验 level 0-4
     let levelIndex: number
     if (mid >= 100000) {

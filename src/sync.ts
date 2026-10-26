@@ -9,6 +9,7 @@ import { getDfAccessToken, NotBoundError } from "./df/oauth.js"
 import { fetchMusicCatalog, fetchPlayerRecords, updateRecords, type UpdateAuth } from "./df/client.js"
 import { dfImportTokens } from "./df/import-token.js"
 import { buildUploadPlan } from "./df/upload.js"
+import { localCharts } from "./df/charts.js"
 import { lxnsBindings } from "./lxns/bindings.js"
 import { buildLxnsUploadPlan } from "./lxns/map.js"
 import { fetchLxnsSongs } from "./b50/songs.js"
@@ -32,17 +33,19 @@ async function syncDf(cfg: BotConfig, userId: string, result: MigrateSuccess): P
       if (!auth.scope.split(/\s+/).includes("prober.records.write")) return { status: "skipped", detail: t("sync.df.noWrite") }
       writeAuth = { token: auth.token }
     }
-    const plan = buildUploadPlan(result.data.pull, await fetchMusicCatalog())
+    const plan = buildUploadPlan(result.data.pull, await fetchMusicCatalog(), localCharts())
     if (!plan.mapped) return { status: "skipped", detail: t("sync.noRecords", { skipped: plan.total }) }
     const uploaded = await updateRecords(plan.records, writeAuth)
     if (!uploaded.ok) return { status: "error", detail: uploaded.message }
+    // The prober reports how many records it matched; a title it does not know yet is ignored on its side.
+    const ignored = uploaded.accepted === undefined ? 0 : Math.max(0, plan.mapped - uploaded.accepted)
     let verification: string
     try {
       const records = await fetchPlayerRecords(importToken ? { importToken } : (await getDfAccessToken(df!, userId, "prober.records.read")).token)
       const check = verifyDfRecords(plan.records, records)
       verification = t("sync.verify", { mode: t("sync.mode.full"), verified: check.verified, total: check.total, tail: check.verified < check.total ? t("sync.verify.partial") : t("sync.verify.ok") })
     } catch { verification = t("sync.verifyUnavailable") }
-    return { status: "ok", detail: t("sync.ok", { mapped: plan.mapped, skipped: plan.total - plan.mapped, verification }) }
+    return { status: "ok", detail: t("sync.ok", { mapped: plan.mapped, skipped: plan.total - plan.mapped, verification }) + (ignored ? t("sync.dfIgnored", { count: ignored }) : "") }
   } catch (e) {
     return e instanceof NotBoundError ? { status: "skipped", detail: t("sync.df.notBound") }
       : { status: "error", detail: t("sync.df.error", { reason: safeReason(e) }) }
@@ -66,7 +69,7 @@ async function syncLx(cfg: BotConfig, userId: string, result: MigrateSuccess): P
       const check = verifyLxRecords(sample, actual)
       verification = t("sync.verify", { mode: lx.accessToken ? t("sync.mode.full") : t("sync.mode.sample"), verified: check.verified, total: check.total, tail: check.verified < check.total ? t("sync.verify.partial") : t("sync.verify.ok") })
     } catch { verification = t("sync.verifyUnavailable") }
-    return { status: "ok", detail: t("sync.ok", { mapped: uploaded.uploaded, skipped: plan.total - plan.mapped, verification }) }
+    return { status: "ok", detail: t("sync.ok", { mapped: uploaded.uploaded, skipped: plan.total - plan.mapped, verification }) + (plan.unknown ? t("sync.lxUnknown", { count: plan.unknown }) : "") }
   } catch (e) { return { status: "error", detail: t("sync.lx.error", { reason: safeReason(e) }) } }
 }
 export async function syncScores(cfg: BotConfig, userId: string, result: MigrateSuccess): Promise<SyncResult> {

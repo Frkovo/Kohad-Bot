@@ -16,7 +16,9 @@
     "preview": "tsx scripts/preview.ts",
     "preview:multiserver": "tsx scripts/preview-multiserver.ts",
     "docker:up": "docker compose up -d --build",
-    "docker:logs": "docker compose logs -f bot"
+    "docker:logs": "docker compose logs -f bot",
+    "deploy": "node scripts/deploy.mjs",
+    "migrate:legacy": "node scripts/migrate-legacy.mjs"
   },
   "dependencies": {
     "@resvg/resvg-js": "^2.6.2",

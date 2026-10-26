@@ -27,9 +27,9 @@ import { lxPlayerProfile, type PlayerProfile } from "./local/profile.js"
 import { dfCfg, lxCfg, lxOAuthCfg, lxUserCfg } from "./provider-config.js"
 import { importAccount, ImportBusyError, ImportQueueFullError } from "./import-account.js"
 import { syncFields, type SyncResult } from "./sync.js"
-import { SERVER_CHOICES, SERVER_NAMES, UserError, checkAccess, isEnabledServer } from "./multiserver/registry.js"
+import { SERVER_CHOICES, SERVER_NAMES, UserError, checkAccess, isEnabledServer, resolveServer } from "./multiserver/registry.js"
 import { serverStore } from "./multiserver/store.js"
-import { b50Request, resolveB50Query, type B50Request, type B50Target } from "./multiserver/b50-query.js"
+import { b50Request, defaultDataSources, resolveB50Query, type B50Request, type B50Target } from "./multiserver/b50-query.js"
 import { bindRow, runRemoteB50, handleServerButton, handleServerModal } from "./multiserver/interactions.js"
 
 type BotQueue = ReturnType<typeof createQueue>
@@ -291,6 +291,24 @@ export async function handleB50(interaction: ChatInputCommandInteraction, cfg: B
 
 const CN_TARGET: B50Target = { server: "cn", fromData: false }
 const isImportCommand = (name: string) => name === "upload" || name === "import"
+
+/**
+ * 国服 with nothing to read: no imported scores, no 水鱼 / 落雪 binding, no import token.
+ * Only asked once the target really is cn (explicit option, saved default or a pick), never for the server picker.
+ */
+async function cnNeedsImport(userId: string): Promise<boolean> {
+  return !(await defaultDataSources.cnData(userId) || await dfImportTokens.get(userId))
+}
+
+// Reuses the existing entry points: friend code / OAuth 落雪, 水鱼 Import-Token, 国服 MAID QR modal.
+async function promptImportChoice(interaction: CommandOrSelect): Promise<void> {
+  const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder().setCustomId("lx:rebind").setLabel(t("b50.import.lx")).setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId("dfimport:open").setLabel(t("b50.import.df")).setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId("ms:bind:cn").setLabel(t("b50.import.maid")).setStyle(ButtonStyle.Secondary),
+  )
+  await interaction.reply({ content: t("b50.noData"), components: [row], flags: MessageFlags.Ephemeral })
+}
 // Only rendered images can be public; /upload is always the caller's own sync report.
 const publicReply = (req: B50Request) => !isImportCommand(req.commandName) && req.public
 type CommandOrSelect = ChatInputCommandInteraction | StringSelectMenuInteraction
@@ -304,6 +322,8 @@ async function runB50(interaction: CommandOrSelect, cfg: BotConfig, queue: BotQu
   const providerFailures: DiagnosticFailure[] = []
   try {
     if (target.server !== "cn") { await runRemoteB50(interaction, cfg, target.server, req, target.fromData); return }
+    // Nothing imported and no prober bound: an image cannot be drawn, so offer the three import paths instead.
+    if (!importing && !req.sgwcmaid && await cnNeedsImport(userId)) { await promptImportChoice(interaction); return }
     if (!importing) {
       if (req.source === "net") throw new UserError(t("b50.cnNoNet"))
       if (req.refresh && !req.sgwcmaid) throw new UserError(t("b50.cnRefreshNeedQr"))

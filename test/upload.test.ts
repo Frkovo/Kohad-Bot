@@ -52,19 +52,34 @@ test("buildUploadPlan maps utage (id>=100000) as catalog type + level_index 0", 
   })
 })
 
-test("buildUploadPlan skips invalid/missing-catalog entries", () => {
+test("buildUploadPlan skips invalid entries but keeps songs missing from the 水鱼 catalog via the local snapshot", () => {
+  const local = new Map([
+    [9999, { title: "本地新曲", type: "DX" }],
+    [100001, { title: "[協]本地宴谱", type: "DX" }],
+  ])
   const plan = buildUploadPlan(pullWith([
     { musicId: 0, level: 3, achievement: 1_000_000 },      // 无效 id
     { musicId: 834, level: 9, achievement: 1_000_000 },    // level 越界
     { musicId: 834, level: 3, achievement: 0 },            // 0 分
-    { musicId: 9999, level: 3, achievement: 1_000_000 },   // 曲库缺失
-    { musicId: 100001, level: 0, achievement: 1_000_000 }, // 宴谱但曲库缺失
+    { musicId: 9999, level: 3, achievement: 1_000_000 },   // 水鱼曲库没有，本地快照有
+    { musicId: 100001, level: 0, achievement: 1_000_000 }, // 宴谱 + 本地快照
     { musicId: 834, level: 3, achievement: 1_010_000, deluxscoreMax: 1, comboStatus: 0, syncStatus: 0 }, // 有效
-  ]), catalog)
-  assert.equal(plan.mapped, 1)
+  ]), catalog, local)
+  assert.equal(plan.mapped, 3)
   assert.equal(plan.total, 6)
   assert.equal(plan.skipped.find(s => s.reason === "无效记录")?.count, 3)
-  assert.equal(plan.skipped.find(s => s.reason === "水鱼曲库缺失")?.count, 2)
-  assert.equal(plan.records[0].fc, "")
-  assert.equal(plan.records[0].fs, "")
+  assert.equal(plan.skipped.find(s => s.reason === "缺少歌曲名称"), undefined)
+  assert.deepEqual(plan.records.map(r => [r.title, r.type, r.level_index]), [
+    ["本地新曲", "DX", 3],
+    ["[協]本地宴谱", "DX", 0],
+    ["PANDORA PARADOXXX", "SD", 3],
+  ])
+  assert.equal(plan.records[2].fc, "")
+  assert.equal(plan.records[2].fs, "")
+})
+
+test("buildUploadPlan reports the only real skip: no title anywhere", () => {
+  const plan = buildUploadPlan(pullWith([{ musicId: 424242, level: 0, achievement: 1_000_000 }]), catalog, new Map())
+  assert.equal(plan.mapped, 0)
+  assert.equal(plan.skipped.find(s => s.reason === "缺少歌曲名称")?.count, 1)
 })
