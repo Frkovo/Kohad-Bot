@@ -16,7 +16,7 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 COPY --from=build /app/dist ./dist
 COPY keys.json ./
-COPY scripts/healthcheck.mjs ./scripts/healthcheck.mjs
+COPY scripts/healthcheck.mjs scripts/migrate-legacy.mjs ./scripts/
 # The data directory holds caches and logs only; player data lives in MySQL.
 RUN mkdir -p /app/.data && chown -R node:node /app/.data
 USER node
