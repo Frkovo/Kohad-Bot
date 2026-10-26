@@ -150,8 +150,15 @@ async function main() {
   await run("ssh", [...sshBase, `tar -xf - -C '${dir}'`], stdin => tar.stdout.pipe(stdin))
   await tarDone
 
-  const compose = `args='-f compose.yaml'; [ -f compose.baota.yaml ] && args="$args -f compose.baota.yaml"; docker compose $args up -d --build`
-  console.log("[deploy] docker compose up -d --build")
+  const composeArgs = env.DEPLOY_COMPOSE?.trim()
+    ? env.DEPLOY_COMPOSE.trim().split(/\s+/).map(file => `-f ${file}`).join(" ")
+    // A host-managed MySQL/Redis setup usually ships its own override (e.g. compose.baota.yaml) and must not
+    // interpolate the base compose's MYSQL_ROOT_PASSWORD.
+    : (await sshOutput(`test -f '${dir}/compose.baota.yaml' && echo baota || echo none`)).includes("baota")
+      ? "-f compose.baota.yaml"
+      : "-f compose.yaml"
+  const compose = `args='${composeArgs}'; docker compose $args up -d --build`
+  console.log(`[deploy] docker compose ${composeArgs} up -d --build`)
   await ssh(env.DEPLOY_RESTART || `cd '${dir}' && ${compose} && docker compose $args ps`)
   reportAssets("asset inventory after deploy", local, await remoteCounts())
   console.log("[deploy] done")

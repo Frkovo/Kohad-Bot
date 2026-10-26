@@ -368,6 +368,24 @@ test("DC-only legacy binding entry points never generate a browser link", async 
     assert.equal(JSON.stringify(lx.modals).includes("https://"),false)
   })
 })
+test("落雪 /bindlx prefers OAuth when configured but honours method:friend_code", async () => {
+  await withStore(async () => {
+    const oauthCfg = { ...cfg, lxDevToken: "fixture", lxClientId: "client", lxClientSecret: "secret",
+      lxRedirectUri: "https://bot.example/oauth-callback/lxns", lxApiBase: "https://lx.example" } as BotConfig
+    const oauth = interaction("bindlx")
+    await handleBindLx(oauth.command, oauthCfg)
+    assert.equal(oauth.modals.length, 0)
+    const link = oauth.messages[0].components[0].toJSON().components.find((component: { style: number }) => component.style === 5) as { url: string }
+    assert.match(link.url, /^https:\/\/lx\.example\/oauth\/authorize\?/)
+    assert.match(link.url, /code_challenge_method=S256/)
+    assert.match(link.url, /redirect_uri=https%3A%2F%2Fbot\.example%2Foauth-callback%2Flxns/)
+
+    const friend = interaction("bindlx", { method: "friend_code" })
+    await handleBindLx(friend.command, oauthCfg)
+    assert.equal(friend.modals[0].custom_id, "lx:bind")
+  })
+})
+
 test("NET errors after public B50 ACK are delivered ephemerally; incomplete capabilities fail before fetching", async t => {
     await withStore(async()=>{
       await serverStore().bind("user-a","jp","fixture","Fixture",{username:"fixture",password:"synthetic-password",cardIndex:2})

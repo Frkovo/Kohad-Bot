@@ -190,7 +190,9 @@ export async function handleBindLx(interaction: ChatInputCommandInteraction, cfg
     })
     return
   }
-  if (oauth) { await replyLxOAuth(interaction, oauth); return }
+  // An explicit method:friend_code must reach the friend-code modal even when OAuth is configured;
+  // otherwise the default entry is OAuth (link + paste), which needs no 落雪 account password here.
+  if (oauth && method !== "friend_code") { await replyLxOAuth(interaction, oauth); return }
   await showLxBindModal(interaction)
 }
 

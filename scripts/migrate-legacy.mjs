@@ -83,7 +83,7 @@ async function main() {
   const db = new DatabaseSync(sqliteFile, { readOnly: true })
   // --dry-run parses and re-seals the legacy data without touching MySQL.
   const connection = dryRun ? null : await mysql.createConnection(config)
-  const counts = { accounts: 0, scores: 0, preferences: 0, bindings: 0, bindingConflicts: 0, snapshots: 0, df: 0, dfTokens: 0, lxns: 0, lxnsConflicts: 0 }
+  const counts = { accounts: 0, accountSkipped: 0, scores: 0, preferences: 0, bindings: 0, bindingConflicts: 0, snapshots: 0, df: 0, dfTokens: 0, lxns: 0, lxnsConflicts: 0 }
   try {
     const tables = new Set(db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map(row => String(row.name)))
     if (!tables.has("accounts")) throw new Error("旧数据库没有 accounts 表，可能不是本项目的数据库")
@@ -97,8 +97,15 @@ async function main() {
     const accounts = db.prepare("SELECT * FROM accounts").all()
     for (const account of accounts) {
       const discordId = String(account.discord_id), gameId = String(account.game_id)
-      const previous = connection ? await connection.query("SELECT game_id FROM accounts WHERE discord_id=?", [discordId]) : [[]]
-      const ownsDifferentAccount = previous[0][0] && previous[0][0].game_id !== gameId
+      const previous = connection ? await connection.query("SELECT game_id, imported_at FROM accounts WHERE discord_id=?", [discordId]) : [[]]
+      const existing = previous[0][0]
+      // The target already imported a different (or newer) game account: that is the player's current data,
+      // so keep it and do not replace it with an older snapshot from the legacy machine.
+      if (existing && existing.game_id !== gameId && String(existing.imported_at) > String(account.imported_at)) {
+        counts.accountSkipped++
+        continue
+      }
+      const ownsDifferentAccount = existing && existing.game_id !== gameId
       if (ownsDifferentAccount) await connection.query("DELETE FROM scores WHERE discord_id=?", [discordId])
       await run(`INSERT INTO accounts(discord_id,game_id,name,imported_at,icon_id,nameplate_id,rating) VALUES(?,?,?,?,?,?,?)
         ON DUPLICATE KEY UPDATE
@@ -196,6 +203,7 @@ async function main() {
 
     console.log(`${dryRun ? "[dry-run] " : ""}迁移完成：${JSON.stringify(counts)}`)
     if (counts.bindingConflicts) console.log(`注意：${counts.bindingConflicts} 条远程服绑定在目标库已存在，已保留目标库版本。`)
+    if (counts.accountSkipped) console.log(`注意：${counts.accountSkipped} 个 Discord 用户在目标库已有更新的游戏账号，已保留目标数据。`)
     if (counts.lxnsConflicts) console.log(`注意：${counts.lxnsConflicts} 条落雪绑定在目标库已存在，已保留目标库版本。`)
   } finally {
     db.close()
