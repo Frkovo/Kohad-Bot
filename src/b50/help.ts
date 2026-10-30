@@ -15,6 +15,7 @@ const COMMAND_SPECS = [
   { slug: "bindlx", command: "/bindlx", color: "#749dc7" },
   { slug: "getuserall", command: "/getuserall", color: "#d19b47" },
   { slug: "tomunet", command: "/tomunet", color: "#c58c55" },
+  { slug: "opt", command: "/opt", color: "#e0a54a" },
   { slug: "help", command: "/help", color: "#7c81ff" },
 ] as const
 
@@ -52,7 +53,7 @@ export function renderHelp(): Promise<Buffer> {
   svg += text(t("help.allCommands"), 35, 412, 27, "#655da8")
   commands.forEach((c,i) => {
     const x=35+(i%2)*676, y=433+Math.floor(i/2)*145
-    const width=i===commands.length-1 ? 1330 : 654
+    const width = commands.length % 2 === 1 && i === commands.length - 1 ? 1330 : 654
     svg += `<rect x="${x}" y="${y}" width="${width}" height="133" rx="14" fill="#ffffff" fill-opacity="0.95" stroke="#ffffff" stroke-width="4"/>`
     svg += `<path d="M${x+14},${y}H${x+width-14}Q${x+width},${y} ${x+width},${y+14}V${y+36}H${x}V${y+14}Q${x},${y} ${x+14},${y}" fill="${c.color}"/>`
     svg += text(c.command, x+17, y+26, 23)

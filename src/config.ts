@@ -1,5 +1,7 @@
 // Bot 配置：优先加载 discord-bot/.env（源码与 dist 同深度，../.env 均为项目根），缺关键项拒绝启动。
+import path from "node:path"
 import { fileURLToPath } from "node:url"
+import { dataDir } from "./store/paths.js"
 
 try {
   process.loadEnvFile(fileURLToPath(new URL("../.env", import.meta.url)))
@@ -48,6 +50,34 @@ export type BotConfig = {
   oauthPort: number
   /** 对外的公开地址，用于拼出回调地址；需与应用登记的回调地址一致 */
   oauthPublicBase: string
+  /** /opt：下载目录（容器内路径；宿主机为 compose 的 ./data 映射） */
+  optUpdateDir: string
+  /** /opt：文案里展示的宿主机目录（默认空 = 显示 optUpdateDir） */
+  optDisplayDir: string
+  /** /opt：直连 CDN / 走迁移服务代理 / 自动回退 */
+  optTransport: "auto" | "direct" | "proxy"
+  /** /opt：片间隔毫秒（0 = 全速；CLI 默认 1000 对应官机 8KB/s） */
+  optPaceMs: number
+  /** /opt：分片字节默认值（0 = 整文件单请求；8192 = 官机分片） */
+  optPartSize: number
+  /** /opt：同一片连续失败上限 */
+  optMaxRetries: number
+  /** /opt：单次任务已探测总量上限（0 = 不限） */
+  optMaxBytes: number
+  /** /opt：允许直连/代理的 CDN 主机后缀 */
+  optHostAllowlist: string[]
+  /** /opt：对外分享下载链接的站点根（默认 OAUTH_PUBLIC_BASE） */
+  optPublicBase: string
+  /** /opt：链接有效期（0 = 不过期） */
+  optLinkTtlMs: number
+  /** /opt：链接签名密钥（空 = 用 B50_AUTH_KEY，或自动生成 .data/opt-link.key） */
+  optLinkSecret: string
+  /** /opt：自动探测新 OPT 的间隔（0 = 关闭） */
+  optPollMs: number
+  /** /opt：自动探测使用的 title_ver */
+  optTitleVer: string
+  /** /opt：新包私信通知的 Discord 用户 ID；空则用应用 owner */
+  optNotifyUserIds: string[]
 }
 
 export function loadConfig(): BotConfig {
@@ -61,6 +91,17 @@ export function loadConfig(): BotConfig {
   const publicBase = (process.env.OAUTH_PUBLIC_BASE ?? "https://kohad-bot.frkovo.uk").trim().replace(/\/+$/, "")
   const oauthPortRaw = Number(process.env.OAUTH_PORT ?? 3729)
   const oauthPort = Number.isInteger(oauthPortRaw) && oauthPortRaw > 0 && oauthPortRaw < 65536 ? oauthPortRaw : 3729
+  // /opt：下载目录与传输参数。默认全速；官机节奏（1000ms/8KB）可按次在下载弹窗里填写。
+  const optTransportRaw = (process.env.SDGB_OPT_TRANSPORT ?? "auto").trim().toLowerCase()
+  const optTransport = optTransportRaw === "direct" || optTransportRaw === "proxy" ? optTransportRaw : "auto"
+  const optPaceRaw = Number(process.env.SDGB_OPT_PACE_MS ?? 0)
+  const optPartRaw = (process.env.SDGB_OPT_PART_SIZE ?? "").trim()
+  const optRetriesRaw = Number(process.env.SDGB_OPT_MAX_RETRIES ?? 200)
+  const optMaxBytesRaw = Number(process.env.SDGB_OPT_MAX_BYTES ?? 0)
+  const optPollRaw = Number(process.env.SDGB_OPT_POLL_MINUTES ?? 10)
+  const optLinkTtlRaw = Number(process.env.SDGB_OPT_LINK_TTL_SECONDS ?? 7 * 24 * 3600)
+  const optTitle = (process.env.SDGB_OPT_TITLE_VER ?? "1.56").trim()
+  const optPublicBase = (process.env.SDGB_OPT_PUBLIC_BASE ?? publicBase).trim().replace(/\/+$/, "")
   return {
     token: required("DISCORD_TOKEN"),
     appId: required("DISCORD_APP_ID"),
@@ -92,5 +133,19 @@ export function loadConfig(): BotConfig {
     lxRedirectUri: process.env.LX_REDIRECT_URI === undefined ? `${publicBase}/oauth-callback/lxns` : process.env.LX_REDIRECT_URI.trim(),
     oauthHost: (process.env.OAUTH_HOST ?? "127.0.0.1").trim(),
     oauthPort,
+    optUpdateDir: path.resolve((process.env.SDGB_UPDATE_DIR ?? "").trim() || path.join(dataDir(), "sdgb-update")),
+    optDisplayDir: (process.env.SDGB_UPDATE_DISPLAY_DIR ?? "").trim(),
+    optTransport,
+    optPaceMs: Number.isFinite(optPaceRaw) && optPaceRaw >= 0 ? Math.floor(optPaceRaw) : 0,
+    optPartSize: /^\d+$/.test(optPartRaw) ? Number(optPartRaw) : 0,
+    optMaxRetries: Number.isFinite(optRetriesRaw) && optRetriesRaw >= 0 ? Math.floor(optRetriesRaw) : 200,
+    optMaxBytes: Number.isFinite(optMaxBytesRaw) && optMaxBytesRaw > 0 ? Math.floor(optMaxBytesRaw) : 0,
+    optHostAllowlist: (process.env.SDGB_OPT_HOST_ALLOWLIST ?? "wahlap.com,sys-allnet.cn").split(",").map(value => value.trim()).filter(Boolean),
+    optPublicBase: optPublicBase || publicBase,
+    optLinkTtlMs: Number.isFinite(optLinkTtlRaw) && optLinkTtlRaw >= 0 ? Math.floor(optLinkTtlRaw) * 1000 : 7 * 24 * 3600 * 1000,
+    optLinkSecret: (process.env.SDGB_OPT_LINK_SECRET ?? process.env.B50_AUTH_KEY ?? "").trim(),
+    optPollMs: Number.isFinite(optPollRaw) && optPollRaw > 0 ? Math.floor(optPollRaw) * 60_000 : 0,
+    optTitleVer: /^\d+\.\d+(\.\d+)?$/.test(optTitle) ? optTitle : "1.56",
+    optNotifyUserIds: (process.env.SDGB_OPT_NOTIFY_USER_IDS ?? "").split(/[\s,，]+/).map(value => value.trim()).filter(Boolean),
   }
 }

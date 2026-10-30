@@ -2,7 +2,7 @@
 import { getJackets, getNetJackets, getCollectionArt } from "./assets.js"
 import type { B50Entry, B50Result } from "./compute.js"
 import type { PlayerProfile } from "../local/profile.js"
-import { asset, picture, text, credit, renderSvg } from "./theme.js"
+import { asset, picture, text, credit, codeBy, renderSvg } from "./theme.js"
 import { t } from "../messages.js"
 
 export type B50RenderInput = { title: string; subtitle?: string; accountRating?: number | null; result: B50Result; footerNote?: string; profile?: PlayerProfile; serverLabel?: string; useCnArtwork?: boolean; hd?: boolean }
@@ -89,5 +89,6 @@ export async function buildB50Svg(input: B50RenderInput): Promise<string> {
   result.b35.forEach((e, i) => { svg += card(e, i, 235, jacket(e), pc, input.useCnArtwork === false) })
   result.b15.forEach((e, i) => { svg += card(e, i, 1085, jacket(e), pc, input.useCnArtwork === false) })
   svg += credit()
+  svg += codeBy()
   return svg + "</svg>"
 }

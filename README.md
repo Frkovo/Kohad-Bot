@@ -20,7 +20,15 @@
 | `/bindlx [method]` | Discord 内输入 **15 位好友码**；支持换绑、解绑 |
 | `/getuserall sgwcmaid:<二维码或链接>` | 导出完整迁移包，同时保存本地资料并自动同步两边查分器 |
 | `/tomunet sgwcmaid:<二维码或链接>` | 导出官方 UserMusicDetailList，同时保存本地资料并自动同步两边查分器 |
+| `/opt` | 查询 1.56 的 `.opt` 列表；**单选一个包** → 详情 → 下载 → 完成卡直接给「下载文件」URL 按钮；文件落在 `SDGB_UPDATE_DIR`（默认 `/app/.data/sdgb-update`） |
 | `/help` | 显示同风格的公开命令帮助图 |
+
+### `/opt` 轮询提醒与分享链接
+
+- 后台每 `SDGB_OPT_POLL_MINUTES`（默认 10）分钟查询一次 DLI；发现磁盘上还没有的 `.opt` **只私信提醒**（`SDGB_OPT_NOTIFY_USER_IDS`，留空则私信应用 owner），**不会自动下载**。
+- 下载由用户在 `/opt` 里单选一个包后触发；同一时间只跑一个下载，进度卡可取消，失败可重试。
+- 下载完成后的文件通过 `https://kohad-bot.frkovo.uk/opt-files/<name>?exp=…&sig=…` 提供（HMAC 签名，默认 7 天，`SDGB_OPT_LINK_TTL_SECONDS=0` 为永久）；完成卡与已下载详情里都是「下载文件」URL 按钮，不直接刷一串链接。
+- 该路径由 Bot 现有 3729 监听器提供，nginx 已加 `/opt-files/` 的 Range 透传；支持单段 Range 与 HEAD。
 
 所有成功的 SGWCMAID 拉取都会更新本地账户，并独立同步水鱼与落雪：包括 `/upload`、附二维码的三种成绩图和两个导出命令。用户已明确授权每次读取后自动同步，不再保留预览 / 二次确认流程。先提交本地事务，再同步；任何一边失败不影响另一边，也不回滚本地资料。未配置 / 未绑定 / 缺写权限会明确报告原因；水鱼自动同步需要有效 OAuth 写权限。
 
@@ -134,7 +142,7 @@ docker compose up -d --build
 docker compose logs -f bot
 ```
 
-`bot` 会等 MySQL 与 Redis 健康后启动，启动时幂等建表并差量注册 13 个命令。代码改动后重新 `docker compose up -d --build` 即可；容器收到 `SIGTERM` 会先关闭 MySQL 连接池与 Redis。
+`bot` 会等 MySQL 与 Redis 健康后启动，启动时幂等建表并差量注册 14 个命令。代码改动后重新 `docker compose up -d --build` 即可；容器收到 `SIGTERM` 会先关闭 MySQL 连接池与 Redis。
 
 OAuth 回调监听在容器内 `0.0.0.0:3729`，compose 默认只映射到宿主机 `127.0.0.1:3729`，由反向代理转发 `https://<域名>/oauth-callback/*`；`OAUTH_PORT` 可改宿主机端口，`OAUTH_PUBLIC_BASE` 必须与查分器面板登记的回调一致。
 
@@ -202,6 +210,16 @@ npm run preview
 | MYSQL_POOL_SIZE | 连接池上限，默认 5（2–10） |
 | REDIS_URL | 扫码去重 / 冷却 / 令牌缓存，默认 `redis://127.0.0.1:6379/0` |
 | B50_DATA_DIR | 渲染缓存与日志目录，默认 `<项目>/.data` |
+| SDGB_UPDATE_DIR | `/opt` 下载目录，默认 `<B50_DATA_DIR>/sdgb-update`（容器 `/app/.data/sdgb-update`，宿主机 `/opt/kohad-bot/data/sdgb-update`） |
+| SDGB_UPDATE_DISPLAY_DIR | 可选：`/opt` 文案展示的宿主机目录，默认显示 `SDGB_UPDATE_DIR` |
+| SDGB_OPT_TRANSPORT | `auto`（默认，直连失败改走服务代理）/ `direct` / `proxy` |
+| SDGB_OPT_PACE_MS / SDGB_OPT_PART_SIZE / SDGB_OPT_MAX_RETRIES | `/opt` 默认片间隔（0=全速）、分片字节（0=整文件单请求，8192=官机分片）、同片失败上限（200） |
+| SDGB_OPT_MAX_BYTES | 单次任务已探测总量上限，0 = 不限（仍检查磁盘余量） |
+| SDGB_OPT_HOST_ALLOWLIST | 允许的 CDN 主机后缀，默认 `wahlap.com,sys-allnet.cn` |
+| SDGB_OPT_POLL_MINUTES / SDGB_OPT_TITLE_VER | 自动探测间隔（默认 10 分钟，0 关闭）与探测使用的 title_ver（默认 1.56） |
+| SDGB_OPT_NOTIFY_USER_IDS | 新包私信接收者（逗号/空格分隔）；留空 = 应用 owner |
+| SDGB_OPT_PUBLIC_BASE / SDGB_OPT_LINK_TTL_SECONDS | 分享链接站点根（默认 `OAUTH_PUBLIC_BASE`）与有效期秒（默认 604800，0 = 永久） |
+| SDGB_OPT_LINK_SECRET | 分享链接签名密钥；空则用 `B50_AUTH_KEY`，再空则自动生成 `.data/opt-link.key` |
 | B50_AUTH_KEY / B50_AUTH_KEY_FILE | 远程服凭据加密密钥（32 字节 Base64 或密钥文件）；务必单独备份 |
 | DF_CLIENT_ID / DF_CLIENT_SECRET | 水鱼 OAuth 应用凭据 |
 | DF_AUTH_URL / DF_SCOPE | 默认水鱼鉴权地址；scope 默认 prober.records.read prober.records.write |

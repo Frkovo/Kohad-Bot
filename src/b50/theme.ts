@@ -113,6 +113,8 @@ export function text(value: unknown, x: number, y: number, size = 16, color = "#
   return out + "</g>"
 }
 export const credit = () => text(t("image.credit"), 700, 1570, 21, "#7c81ff", 700, "middle")
+// Signature in the bottom-right corner of the sea band, clear of the centred designer credit.
+export const codeBy = () => text(t("image.codeBy"), 1385, 1575, 16, "#7c81ff", 700, "end")
 
 // Rasterizing a B50 takes longer than Discord's 3-second ACK window. Keep it off
 // the gateway thread; a bounded pool lets other users' interactions ACK promptly.

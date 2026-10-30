@@ -5,13 +5,13 @@ import { t } from "./messages.js"
 import { dataDir } from "./store/paths.js"
 import { HttpStatusError, UserError } from "./multiserver/registry.js"
 
-export const STAGES = ["interaction", "binding.read", "credentials.read", "credentials.save", "auth.form", "auth.submit", "auth.redirect", "cards.parse", "card.select", "profile.read", "profile.parse", "records.fetch", "records.parse", "snapshot.save", "rating.calculate", "image.render", "reply", "import", "provider", "runtime"] as const
+export const STAGES = ["interaction", "binding.read", "credentials.read", "credentials.save", "auth.form", "auth.submit", "auth.redirect", "cards.parse", "card.select", "profile.read", "profile.parse", "records.fetch", "records.parse", "snapshot.save", "rating.calculate", "image.render", "reply", "import", "provider", "runtime", "opt.query", "opt.parse", "opt.sweep", "opt.probe", "opt.download", "opt.store"] as const
 export type Stage = typeof STAGES[number]
 export const CATEGORIES = ["validation", "http", "dns", "tls", "timeout", "connection", "network", "cancelled", "discord", "storage", "provider", "internal"] as const
 // Error codes returned by upstream providers (OAuth / prober APIs). Only these strings are ever logged.
 const PROVIDER_CODES = new Set(["invalid_client", "invalid_grant", "invalid_scope", "invalid_request", "unauthorized_client", "access_denied", "expired_token", "authorization_pending", "slow_down", "invalid_response", "token_missing", "scope_missing", "agreement_missing", "forbidden", "rate_limited", "oauth_disabled", "token_rejected", "records_http", "refresh_token_missing", "binding_changed"])
 export type Category = typeof CATEGORIES[number]
-export type Operation = "bind" | "select" | "confirm" | "sync" | "b50" | "command" | "import" | "runtime"
+export type Operation = "bind" | "select" | "confirm" | "sync" | "b50" | "command" | "import" | "runtime" | "opt"
 export type TraceServer = "cn" | "jp" | "intl" | "mumur" | "missless" | "bot"
 export type TraceEvent = "start" | "stage" | "http-start" | "http-response" | "http-error" | "page-shape" | "records" | "relogin" | "complete" | "cache-fallback" | "reply-failed" | "failed"
 export type Host = "maimaidx.jp" | "maimaidx-eng.com" | "lng-tgk-aime-gw.am-all.net" | "blocked"

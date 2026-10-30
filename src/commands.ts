@@ -34,6 +34,9 @@ export const COMMANDS_JSON = [
     .setDescription(t("command.bindlx"))
     .addStringOption(o => o.setName("method").setDescription(t("command.bindlx.method")).addChoices({ name: t("command.bindlx.friendCode"), value: "friend_code" })),
   new SlashCommandBuilder()
+    .setName("opt")
+    .setDescription(t("command.opt")),
+  new SlashCommandBuilder()
     .setName("upload")
     .setDescription(t("command.upload"))
     .addStringOption(sgwcOption),

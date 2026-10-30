@@ -2,10 +2,11 @@
 //   https://kohad-bot.frkovo.uk/oauth-callback/lxns          -> http://127.0.0.1:3729/oauth-callback/lxns
 //   https://kohad-bot.frkovo.uk/oauth-callback/diving-fish   -> http://127.0.0.1:3729/oauth-callback/diving-fish
 // The bot never echoes query values back to the browser and never logs codes, states or tokens.
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http"
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http"
 import type { BotConfig } from "./config.js"
 import { t } from "./messages.js"
 import { Trace } from "./diagnostics.js"
+import { OPT_FILES_PREFIX, serveOptFile } from "./opt/files.js"
 import { dfCfg, lxOAuthCfg } from "./provider-config.js"
 import { takeOAuthSessionByState, type OAuthSession } from "./oauth-session.js"
 import { takeLxSessionByState, exchangeLxCode } from "./lxns/oauth.js"
@@ -87,8 +88,9 @@ function send(res: ServerResponse, page: Page) {
 const NOT_FOUND: Page = { status: 404, title: t("oauth.page.notFoundTitle"), body: t("oauth.page.notFound") }
 
 async function route(req: IncomingMessage, res: ServerResponse, cfg: BotConfig) {
-  if (req.method !== "GET") { res.writeHead(405, { allow: "GET" }).end(); return }
   const url = new URL(req.url ?? "/", "http://localhost")
+  if (url.pathname.startsWith(OPT_FILES_PREFIX)) { await serveOptFile(req, res, url, cfg); return }
+  if (req.method !== "GET") { res.writeHead(405, { allow: "GET" }).end(); return }
   if (url.search.length > 4096) { send(res, { status: 414, title: t("oauth.page.failTitle"), body: t("oauth.page.badRequest") }); return }
   if (url.pathname === LX_CALLBACK_PATH) { send(res, await handleLxCallback(url, cfg)); return }
   if (url.pathname === DF_CALLBACK_PATH) { send(res, await handleDfCallback(url, cfg)); return }
@@ -96,14 +98,19 @@ async function route(req: IncomingMessage, res: ServerResponse, cfg: BotConfig) 
   send(res, NOT_FOUND)
 }
 
-export function startOAuthServer(cfg: BotConfig): void {
-  const server = createServer((req, res) => {
+export function createOAuthServer(cfg: BotConfig): Server {
+  return createServer((req, res) => {
     route(req, res, cfg).catch(e => {
       // Failures are logged by reference only; the request URL is never written to the log.
       new Trace("runtime").fail(e)
       if (!res.headersSent) send(res, { status: 500, title: t("oauth.page.failTitle"), body: t("oauth.page.notFound") })
     })
   })
+}
+
+export function startOAuthServer(cfg: BotConfig): Server {
+  const server = createOAuthServer(cfg)
   server.on("error", e => { console.error(`[oauth] listener failed on ${cfg.oauthHost}:${cfg.oauthPort}: ${(e as Error).message}`) })
-  server.listen(cfg.oauthPort, cfg.oauthHost, () => console.log(`[oauth] listening on ${cfg.oauthHost}:${cfg.oauthPort} (${LX_CALLBACK_PATH}, ${DF_CALLBACK_PATH})`))
+  server.listen(cfg.oauthPort, cfg.oauthHost, () => console.log(`[oauth] listening on ${cfg.oauthHost}:${cfg.oauthPort} (${LX_CALLBACK_PATH}, ${DF_CALLBACK_PATH}, ${OPT_FILES_PREFIX})`))
+  return server
 }

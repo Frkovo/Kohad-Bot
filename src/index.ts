@@ -15,6 +15,8 @@ import { errorText, isSgwcFormat, normalizeSgwc, QR_INPUT_HINT } from "./util.js
 import { importAccount, ImportBusyError, ImportQueueFullError } from "./import-account.js"
 import { syncFields, type SyncResult } from "./sync.js"
 import { handleServerCommand, handleServerSelect } from "./multiserver/interactions.js"
+import { handleOptButton, handleOptCommand, handleOptSelect } from "./opt/interactions.js"
+import { startOptWatcher } from "./opt/watcher.js"
 import { t } from "./messages.js"
 import { Trace } from "./diagnostics.js"
 import { closeAppStore, openAppStore } from "./store/index.js"
@@ -59,14 +61,20 @@ async function registerCommands(client: Client): Promise<void> {
   }
   const sig = (c: { name: string; description: string; options?: readonly unknown[] }) =>
     `${c.name}|${c.description}|${(c.options ?? []).map((o) => {
-      const x = o as { name?: string; type?: number; required?: boolean; description?: string; min_length?: number; max_length?: number }
-      return `${x.name}:${x.type}:${x.required ?? false}:${x.description ?? ""}:${x.min_length ?? ""}:${x.max_length ?? ""}:${JSON.stringify((o as { choices?: unknown }).choices ?? [])}`
+      const x = o as { name?: string; type?: number; required?: boolean; description?: string; min_length?: number; max_length?: number; minLength?: number; maxLength?: number; choices?: unknown }
+      // discord.js 的 Command 对象可能把 min/max 归一成 camelCase，两种都读，避免每次重启都误判。
+      return `${x.name}:${x.type}:${x.required ?? false}:${x.description ?? ""}:${x.min_length ?? x.minLength ?? ""}:${x.max_length ?? x.maxLength ?? ""}:${JSON.stringify(x.choices ?? [])}`
     }).join(",")}`
   const before = [...existing.values()].map(sig).sort().join(";")
   const after = [...COMMANDS_JSON].map(sig).sort().join(";")
   if (before === after) {
     console.log("[bot] commands unchanged, skip registration")
     return
+  }
+  const live = new Map([...existing.values()].map(c => [c.name, sig(c)]))
+  for (const command of COMMANDS_JSON) {
+    const current = live.get(command.name)
+    if (current !== sig(command)) console.log(`[bot] command diff ${command.name}\n  live:  ${String(current).slice(0, 240)}\n  local: ${sig(command).slice(0, 240)}`)
   }
   if (guildId) {
     await app.commands.set(COMMANDS_JSON, guildId)
@@ -188,6 +196,7 @@ client.on(Events.InteractionCreate, (interaction) => {
       return
     }
     if (name === "help") { void handleHelp(interaction); return }
+    if (name === "opt") { void handleOptCommand(interaction, cfg); return }
     if (["server", "bind", "sync", "unbind"].includes(name)) { void handleServerCommand(interaction, cfg); return }
     if (name === "getuserall" || name === "tomunet") { void handleCommand(interaction, name as OutputKind); return }
     if (name === "binddf") { void handleBindDf(interaction, cfg); return }
@@ -197,11 +206,16 @@ client.on(Events.InteractionCreate, (interaction) => {
     return
   }
   if (interaction.isButton()) {
+    if (interaction.customId.startsWith("opt:")) { void handleOptButton(interaction, cfg).catch(e => new Trace("opt").fail(e)); return }
     void handleButton(interaction, cfg).catch(e => new Trace("runtime").fail(e))
     return
   }
   if (interaction.isModalSubmit()) {
     void handleModal(interaction, cfg, queue).catch(e => new Trace("runtime").fail(e))
+    return
+  }
+  if (interaction.isStringSelectMenu() && interaction.customId.startsWith("opt:")) {
+    void handleOptSelect(interaction, cfg).catch(e => new Trace("opt").fail(e))
     return
   }
   if (interaction.isStringSelectMenu() && interaction.customId.startsWith("ms:pick:")) {
@@ -227,3 +241,30 @@ for (const signal of ["SIGTERM", "SIGINT"] as const) {
   })
 }
 await client.login(cfg.token)
+
+/** 新包只私信管理员；管理员列表优先 SDGB_OPT_NOTIFY_USER_IDS，否则用应用 owner。 */
+async function notifyAdmins(text: string): Promise<boolean> {
+  const ids = new Set(cfg.optNotifyUserIds)
+  const owner = client.application?.owner
+  if (owner) {
+    if ("members" in owner) for (const member of owner.members.values()) ids.add(member.user.id)
+    else ids.add(owner.id)
+  }
+  if (!ids.size) {
+    console.warn("[opt] new package found but no SDGB_OPT_NOTIFY_USER_IDS and no application owner")
+    return false
+  }
+  let delivered = false
+  for (const id of ids) {
+    try {
+      const user = await client.users.fetch(id)
+      await user.send(text)
+      delivered = true
+    } catch (error) {
+      console.warn(`[opt] DM ${id} failed: ${(error as Error).message}`)
+    }
+  }
+  return delivered
+}
+
+startOptWatcher(cfg, notifyAdmins)
