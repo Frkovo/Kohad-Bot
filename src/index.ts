@@ -2,7 +2,7 @@
 // 关键约束：3 秒内 ack（先 deferReply）；命令名全小写；差量注册避免消耗命令配额。
 import {
   AttachmentBuilder, Client, EmbedBuilder, Events, GatewayIntentBits, MessageFlags,
-  type ChatInputCommandInteraction,
+  type ChatInputCommandInteraction, type Interaction,
 } from "discord.js"
 import { loadConfig } from "./config.js"
 import { COMMANDS_JSON, COMMAND_NAMES } from "./commands.js"
@@ -163,6 +163,20 @@ process.on("unhandledRejection", (reason) => {
   new Trace("runtime").fail(reason)
 })
 
+// 网关排障：交互是否送达、分片是否在抖动。只记录类型/customId，不记录用户内容。
+client.on(Events.Error, error => { new Trace("runtime").fail(error) })
+client.on(Events.ShardDisconnect, (event, id) => console.warn(`[bot] shard ${id} disconnected (${event.code})`))
+client.on(Events.ShardReconnecting, id => console.warn(`[bot] shard ${id} reconnecting`))
+client.on(Events.ShardResume, (id, replayed) => console.log(`[bot] shard ${id} resumed (replayed ${replayed})`))
+
+function describeInteraction(interaction: Interaction): string {
+  if (interaction.isChatInputCommand()) return `command:${interaction.commandName}`
+  if (interaction.isButton()) return `button:${interaction.customId}`
+  if (interaction.isStringSelectMenu()) return `select:${interaction.customId}`
+  if (interaction.isModalSubmit()) return `modal:${interaction.customId}`
+  return `type:${interaction.type}`
+}
+
 client.once(Events.ClientReady, async (c) => {
   console.log(`[bot] logged in as ${c.user.tag} (${c.user.id})`)
   if (cfg.allowedUserIds.size === 0) {
@@ -189,6 +203,7 @@ client.once(Events.ClientReady, async (c) => {
 })
 
 client.on(Events.InteractionCreate, (interaction) => {
+  console.log(`[bot] interaction ${describeInteraction(interaction)} (+${Date.now() - interaction.createdTimestamp}ms)`)
   if (interaction.isChatInputCommand()) {
     const name = interaction.commandName
     if (!(COMMAND_NAMES as readonly string[]).includes(name) && !["import", "fitb50"].includes(name)) {
