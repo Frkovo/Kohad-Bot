@@ -52,8 +52,6 @@ export type BotConfig = {
   oauthPublicBase: string
   /** /opt：下载目录（容器内路径；宿主机为 compose 的 ./data 映射） */
   optUpdateDir: string
-  /** /opt：文案里展示的宿主机目录（默认空 = 显示 optUpdateDir） */
-  optDisplayDir: string
   /** /opt：直连 CDN / 走迁移服务代理 / 自动回退 */
   optTransport: "auto" | "direct" | "proxy"
   /** /opt：片间隔毫秒（0 = 全速；CLI 默认 1000 对应官机 8KB/s） */
@@ -134,7 +132,6 @@ export function loadConfig(): BotConfig {
     oauthHost: (process.env.OAUTH_HOST ?? "127.0.0.1").trim(),
     oauthPort,
     optUpdateDir: path.resolve((process.env.SDGB_UPDATE_DIR ?? "").trim() || path.join(dataDir(), "sdgb-update")),
-    optDisplayDir: (process.env.SDGB_UPDATE_DISPLAY_DIR ?? "").trim(),
     optTransport,
     optPaceMs: Number.isFinite(optPaceRaw) && optPaceRaw >= 0 ? Math.floor(optPaceRaw) : 0,
     optPartSize: /^\d+$/.test(optPartRaw) ? Number(optPartRaw) : 0,

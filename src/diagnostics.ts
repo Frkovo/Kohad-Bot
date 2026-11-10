@@ -5,7 +5,7 @@ import { t } from "./messages.js"
 import { dataDir } from "./store/paths.js"
 import { HttpStatusError, UserError } from "./multiserver/registry.js"
 
-export const STAGES = ["interaction", "binding.read", "credentials.read", "credentials.save", "auth.form", "auth.submit", "auth.redirect", "cards.parse", "card.select", "profile.read", "profile.parse", "records.fetch", "records.parse", "snapshot.save", "rating.calculate", "image.render", "reply", "import", "provider", "runtime", "opt.query", "opt.parse", "opt.sweep", "opt.probe", "opt.download", "opt.store"] as const
+export const STAGES = ["interaction", "binding.read", "credentials.read", "credentials.save", "auth.form", "auth.submit", "auth.redirect", "cards.parse", "card.select", "profile.read", "profile.parse", "records.fetch", "records.parse", "snapshot.save", "rating.calculate", "image.render", "reply", "import", "provider", "runtime", "opt.query", "opt.parse", "opt.sweep", "opt.probe", "opt.download", "opt.store", "opt.instruction"] as const
 export type Stage = typeof STAGES[number]
 export const CATEGORIES = ["validation", "http", "dns", "tls", "timeout", "connection", "network", "cancelled", "discord", "storage", "provider", "internal"] as const
 // Error codes returned by upstream providers (OAuth / prober APIs). Only these strings are ever logged.

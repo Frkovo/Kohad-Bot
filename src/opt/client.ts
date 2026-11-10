@@ -40,6 +40,9 @@ export type SweepRow = {
 export type OptSweepSuccess = { ok: true; format: "sdgb-opt-v1"; spec: string; clientIdMasked: string; versions: SweepRow[] }
 export type ProbeHit = { url: string; size: number | null; note: string }
 export type OptProbeSuccess = { ok: true; results: ProbeHit[] }
+/** 指示書原文：由 CN 侧服务抓回来，Bot 只负责转成 Discord 附件。 */
+export type OptInstructionFile = { role: "app" | "option" | "local"; name: string; text: string; bytes: number }
+export type OptInstructionSuccess = { ok: true; format: "sdgb-opt-v1"; titleVer: string | null; files: OptInstructionFile[] }
 export type OptFailure = { ok: false; status: number; stage?: string; detail?: string }
 export type OptResult<T> = T | OptFailure
 
@@ -94,6 +97,11 @@ export function probeOpt(cfg: BotConfig, urls: string[]): Promise<OptResult<OptP
 
 export function sweepOpt(cfg: BotConfig, spec: string): Promise<OptResult<OptSweepSuccess>> {
   return request<OptSweepSuccess>(cfg, "/api/opt/sweep", { method: "POST", body: { spec } })
+}
+
+/** DLI 指示書原文（app / option）；由迁移服务代抓，Bot 不需要能访问华立 CDN。 */
+export function instructionOpt(cfg: BotConfig, titleVer: string): Promise<OptResult<OptInstructionSuccess>> {
+  return request<OptInstructionSuccess>(cfg, "/api/opt/instruction", { method: "POST", body: { titleVer } })
 }
 
 /** Range 回源代理地址：UK 直连 CDN 失败时使用。 */

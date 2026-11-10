@@ -39,7 +39,7 @@ async function fileServer(): Promise<{ url: string; close: () => Promise<void> }
 function cfg(dir: string): BotConfig {
   return {
     migrateUrl: "https://migrate.test", migrateApiKey: "k", callTimeoutMs: 5000, allowedUserIds: new Set<string>(),
-    optUpdateDir: dir, optDisplayDir: "", optTransport: "direct", optPaceMs: 0, optPartSize: 0,
+    optUpdateDir: dir, optTransport: "direct", optPaceMs: 0, optPartSize: 0,
     optMaxRetries: 2, optMaxBytes: 0, optHostAllowlist: ["wahlap.com", "127.0.0.1"],
     optPublicBase: "https://kohad-bot.frkovo.uk", optLinkTtlMs: 60_000, optLinkSecret: "ui-secret",
     optPollMs: 0, optTitleVer: "1.56", optNotifyUserIds: [],
@@ -60,8 +60,17 @@ function query(packages: OptPackage[]): OptQuerySuccess {
   }
 }
 
-function mockFetch(t: { mock: { method: Function } }, payload: OptQuerySuccess) {
+const INSTRUCTION = {
+  ok: true, format: "sdgb-opt-v1", titleVer: "1.56",
+  files: [
+    { role: "option", name: "dliOpt.ini", text: "[COMMON]\nPART_SIZE=8192,8192,8192\nINSTALL1=https://maimai-haisin.wahlap.com/b.opt\n", bytes: 84 },
+    { role: "app", name: "dliApp.ini", text: "[COMMON]\nINSTALL1=https://maimai-haisin.wahlap.com/app.app\n", bytes: 59 },
+  ],
+}
+
+function mockFetch(t: { mock: { method: Function } }, payload: OptQuerySuccess, instruction: unknown = INSTRUCTION) {
   t.mock.method(globalThis, "fetch", async (url: unknown, init?: RequestInit) => {
+    if (String(url).includes("/api/opt/instruction")) return Response.json(instruction)
     if (String(url).includes("/api/opt/probe")) {
       const body = JSON.parse(String(init?.body)) as { urls: string[] }
       return Response.json({ ok: true, results: [{ url: body.urls[0], size: 555, note: "" }] })
@@ -116,8 +125,45 @@ test("/opt 概览：单选菜单 + 刷新/关闭，不直接给下载", async t 
     assert.match(text, /opt:s:/)
     assert.match(text, new RegExp(msg("opt.button.refresh")))
     assert.match(text, new RegExp(msg("opt.button.close")))
+    assert.match(text, new RegExp(msg("opt.button.instruction")))
     assert.doesNotMatch(text, /opt.button.download/)
     assert.equal(text.includes("/opt-files/"), false)
+    assert.equal(text.includes(dir), false, "概览不得展示落盘路径")
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test("/opt 概览：下载指示书 → app/option 原文作为 .txt 附件", async t => {
+  setWatcherInterval(0)
+  const dir = mkdtempSync(path.join(tmpdir(), "sdgb-ui2-"))
+  mockFetch(t, query([pkg(1, "SDGB_a.opt", "https://maimai-haisin.wahlap.com/a.opt", 1024)]))
+  try {
+    const { interaction, state } = commandFake()
+    await handleOptCommand(interaction, cfg(dir))
+    const id = panelId(state.replies[0]!)
+    const button = componentFake(`opt:b:${id}:instruction`)
+    await handleOptButton(button.interaction as unknown as ButtonInteraction, cfg(dir))
+    const payload = button.state.replies.at(-1)!
+    assert.equal(payload.content, msg("opt.instr.sent"))
+    const text = JSON.stringify(payload)
+    assert.match(text, /SDGB_1\.56_option_instruction\.txt/)
+    assert.match(text, /SDGB_1\.56_app_instruction\.txt/)
+    assert.equal(text.includes(dir), false, "附件消息不得展示落盘路径")
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test("/opt 下载指示书：服务返回空内容时提示，不改动面板组件", async t => {
+  setWatcherInterval(0)
+  const dir = mkdtempSync(path.join(tmpdir(), "sdgb-ui2-"))
+  mockFetch(t, query([pkg(1, "SDGB_a.opt", "https://maimai-haisin.wahlap.com/a.opt", 1024)]), {
+    ok: true, format: "sdgb-opt-v1", titleVer: "1.56", files: [{ role: "option", name: "dliOpt.ini", text: "  \n", bytes: 3 }],
+  })
+  try {
+    const { interaction, state } = commandFake()
+    await handleOptCommand(interaction, cfg(dir))
+    const id = panelId(state.replies[0]!)
+    const button = componentFake(`opt:b:${id}:instruction`)
+    await handleOptButton(button.interaction as unknown as ButtonInteraction, cfg(dir))
+    assert.match(String(button.state.replies.at(-1)!.content), new RegExp(msg("opt.instr.empty")))
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
@@ -135,6 +181,7 @@ test("选择一个已下载的包：详情给下载文件 URL 按钮", async t =
     assert.match(detail, new RegExp(msg("opt.option.downloaded")))
     assert.match(detail, /"url":"https:\/\/kohad-bot\.frkovo\.uk\/opt-files\/SDGB_a\.opt\?exp=/)
     assert.match(detail, new RegExp(msg("opt.button.link")))
+    assert.equal(detail.includes(dir), false, "详情不得展示落盘路径")
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
@@ -159,6 +206,7 @@ test("选择未下载的包 → 下载 → 完成卡带下载按钮", async t =>
     const last = JSON.stringify(download.state.replies.at(-1))
     assert.match(last, new RegExp(msg("opt.done.title")))
     assert.match(last, /"url":"https:\/\/kohad-bot\.frkovo\.uk\/opt-files\/SDGB_new\.opt\?exp=/)
+    assert.equal(last.includes(dir), false, "完成卡不得展示落盘路径")
   } finally { await file.close(); rmSync(dir, { recursive: true, force: true }) }
 })
 

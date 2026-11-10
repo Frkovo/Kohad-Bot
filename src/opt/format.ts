@@ -74,3 +74,10 @@ export function formatDuration(ms: number): string {
 export function formatSpeed(bytesPerSecond: number): string {
   return `${humanSize(bytesPerSecond)}/s`
 }
+
+/** 指示書附件名：SDGB_<titleVer>_app|option_instruction.txt（只含 ASCII，便于 Discord 与本地保存）。 */
+export function instructionFileName(role: string, titleVer: string): string {
+  const version = String(titleVer ?? "").replace(/[^0-9A-Za-z._-]/g, "_") || "unknown"
+  const kind = role === "app" ? "app" : "option"
+  return `SDGB_${version}_${kind}_instruction.txt`
+}

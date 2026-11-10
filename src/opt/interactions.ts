@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto"
 import { existsSync, mkdirSync, statfsSync, statSync } from "node:fs"
 import path from "node:path"
 import {
-  ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder, MessageFlags, StringSelectMenuBuilder,
+  ActionRowBuilder, AttachmentBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder, MessageFlags, StringSelectMenuBuilder,
   type ButtonInteraction, type ChatInputCommandInteraction, type StringSelectMenuInteraction,
 } from "discord.js"
 import type { BotConfig } from "../config.js"
@@ -12,11 +12,11 @@ import { t } from "../messages.js"
 import { Trace, failureText } from "../diagnostics.js"
 import { checkAccess, UserError } from "../multiserver/registry.js"
 import {
-  isOptFailure, probeOpt, queryOpt, rangeUrl,
+  instructionOpt, isOptFailure, probeOpt, queryOpt, rangeUrl,
   type OptFailure, type OptPackage, type OptQuerySuccess,
 } from "./client.js"
 import { DownloadCancelled, downloadPackage, type DownloadProgress } from "./download.js"
-import { formatDuration, formatSpeed, humanSize, safeFileName } from "./format.js"
+import { formatDuration, formatSpeed, humanSize, instructionFileName, safeFileName } from "./format.js"
 import { linkFor } from "./links.js"
 import { isSeen } from "./seen.js"
 import { watcherState } from "./status.js"
@@ -113,8 +113,9 @@ function freeBytes(dir: string): number | null {
   }
 }
 
-function displayDir(cfg: BotConfig): string {
-  return cfg.optDisplayDir || cfg.optUpdateDir
+function displayFree(cfg: BotConfig): string {
+  const free = freeBytes(cfg.optUpdateDir)
+  return free == null ? "?" : humanSize(free)
 }
 
 function optPackages(query: OptQuerySuccess): OptPackage[] {
@@ -214,14 +215,14 @@ function overviewEmbed(panel: Panel, cfg: BotConfig): EmbedBuilder {
     watcher.lastError ? t("opt.status.error", { error: watcher.lastError.slice(0, 100) }) : "",
     t("opt.overview.counts", { total: opt.length, downloaded: done, new: fresh }),
   ].filter(Boolean).join("\n")
-  const free = freeBytes(cfg.optUpdateDir)
+  const free = displayFree(cfg)
   return new EmbedBuilder()
     .setTitle(t("opt.title"))
     .setColor(0x45adc6)
     .setDescription(description.slice(0, 4000))
     .addFields(
       { name: t("opt.field.version"), value: `${panel.titleVer} · ${panel.query.clientIdMasked ?? "-"}`, inline: true },
-      { name: t("opt.field.disk"), value: `${free == null ? "?" : humanSize(free)} · ${displayDir(cfg)}`.slice(0, 200), inline: true },
+      { name: t("opt.field.disk"), value: free, inline: true },
     )
 }
 
@@ -236,6 +237,7 @@ function overviewComponents(panel: Panel, cfg: BotConfig) {
       description: t("opt.option.desc", { size: sizeText(panel, pkg, cfg), state: stateText(panel, pkg, cfg) }).slice(0, 100),
     })))
   const buttons = new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder().setCustomId(`opt:b:${panel.id}:instruction`).setLabel(t("opt.button.instruction")).setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId(`opt:b:${panel.id}:refresh`).setLabel(t("opt.button.refresh")).setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId(`opt:b:${panel.id}:close`).setLabel(t("opt.button.close")).setStyle(ButtonStyle.Danger),
   )
@@ -252,7 +254,6 @@ function detailEmbed(panel: Panel, cfg: BotConfig): EmbedBuilder {
     { name: t("opt.detail.size"), value: size == null ? t("opt.option.sizeUnknown") : humanSize(size), inline: true },
     { name: t("opt.detail.state"), value: stateLine(pkg, cfg), inline: true },
   ]
-  if (done) fields.push({ name: t("opt.detail.saved"), value: displayDir(cfg), inline: false })
   return new EmbedBuilder()
     .setTitle(pkg.name)
     .setColor(done ? 0x22c55e : 0x7c81ff)
@@ -280,6 +281,7 @@ function detailComponents(panel: Panel, cfg: BotConfig) {
       .setLabel(panel.probing ? t("opt.button.probing") : t("opt.button.probe"))
       .setStyle(ButtonStyle.Secondary)
       .setDisabled(!!panel.probing || done),
+    new ButtonBuilder().setCustomId(`opt:b:${panel.id}:instruction`).setLabel(t("opt.button.instruction")).setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId(`opt:b:${panel.id}:back`).setLabel(t("opt.button.back")).setStyle(ButtonStyle.Secondary),
   )
   return [row]
@@ -291,7 +293,7 @@ function panelView(panel: Panel, cfg: BotConfig) {
   return { embeds: [detailEmbed(panel, cfg)], components: detailComponents(panel, cfg) }
 }
 
-function progressEmbed(job: Job, cfg: BotConfig): EmbedBuilder {
+function progressEmbed(job: Job): EmbedBuilder {
   const percent = job.total ? `${((job.written / job.total) * 100).toFixed(1)}%` : "--"
   const eta = job.total && job.speed > 0 ? formatDuration(((job.total - job.written) / job.speed) * 1000) : "-"
   return new EmbedBuilder()
@@ -302,16 +304,15 @@ function progressEmbed(job: Job, cfg: BotConfig): EmbedBuilder {
       { name: t("opt.progress.speed"), value: formatSpeed(job.speed), inline: true },
       { name: t("opt.progress.eta"), value: eta, inline: true },
     )
-    .setFooter({ text: displayDir(cfg) })
 }
 
-function doneEmbed(job: Job, cfg: BotConfig): EmbedBuilder {
+function doneEmbed(job: Job): EmbedBuilder {
   const title = job.state === "cancelled" ? t("opt.done.cancelledTitle") : job.state === "failed" ? t("opt.done.failedTitle") : t("opt.done.title")
   const color = job.state === "done" ? 0x22c55e : job.state === "cancelled" ? 0xe0a54a : 0xef4444
   const embed = new EmbedBuilder()
     .setTitle(title)
     .setColor(color)
-    .setDescription(job.state === "failed" ? (job.error ?? "-").slice(0, 4000) : t("opt.done.saved", { dir: cfg.optUpdateDir }))
+    .setDescription(job.state === "failed" ? (job.error ?? "-").slice(0, 4000) : t("opt.done.ready"))
     .addFields({ name: t("opt.done.size"), value: humanSize(job.written || job.total || 0), inline: true })
   if (job.finishedAt) embed.setFooter({ text: formatDuration(job.finishedAt - job.startedAt) })
   return embed
@@ -320,7 +321,7 @@ function doneEmbed(job: Job, cfg: BotConfig): EmbedBuilder {
 function jobView(job: Job, cfg: BotConfig) {
   if (job.state === "running") {
     return {
-      embeds: [progressEmbed(job, cfg)],
+      embeds: [progressEmbed(job)],
       components: [new ActionRowBuilder<ButtonBuilder>().addComponents(
         new ButtonBuilder().setCustomId(`opt:b:${job.panelId}:cancel`).setLabel(t("opt.button.cancel")).setStyle(ButtonStyle.Danger),
       )],
@@ -330,7 +331,7 @@ function jobView(job: Job, cfg: BotConfig) {
   if (job.state === "done") row.addComponents(linkButton(cfg, job.pkg.name))
   else row.addComponents(new ButtonBuilder().setCustomId(`opt:b:${job.panelId}:download`).setLabel(t("opt.button.retry")).setStyle(ButtonStyle.Primary))
   row.addComponents(new ButtonBuilder().setCustomId(`opt:b:${job.panelId}:back`).setLabel(t("opt.button.back")).setStyle(ButtonStyle.Secondary))
-  return { embeds: [doneEmbed(job, cfg)], components: [row] }
+  return { embeds: [doneEmbed(job)], components: [row] }
 }
 
 // ---------------------------------------------------------------------------
@@ -389,7 +390,7 @@ async function runDownload(job: Job, cfg: BotConfig) {
     if (job.stale) {
       try {
         const user = await job.interaction.client.users.fetch(job.user)
-        await user.send({ embeds: [doneEmbed(job, cfg)] })
+        await user.send({ embeds: [doneEmbed(job)] })
       } catch { /* DM 关闭时忽略 */ }
     }
   }
@@ -469,6 +470,16 @@ export async function handleOptCommand(interaction: ChatInputCommandInteraction,
 
 async function handlePanelButton(interaction: ButtonInteraction, cfg: BotConfig, panel: Panel, action: string) {
   switch (action) {
+    case "instruction": {
+      await interaction.deferUpdate()
+      panel.trace.step("opt.instruction")
+      const result = unwrap(await instructionOpt(cfg, panel.titleVer))
+      const files = result.files.filter(file => file.text.trim().length > 0)
+      if (!files.length) throw new UserError(t("opt.instr.empty"))
+      const attachments = files.map(file => new AttachmentBuilder(Buffer.from(file.text, "utf8"), { name: instructionFileName(file.role, panel.titleVer) }))
+      await interaction.editReply({ ...panelView(panel, cfg), content: t("opt.instr.sent"), files: attachments })
+      return
+    }
     case "refresh":
       if (active && active.state === "running") throw new UserError(t("opt.error.busy"))
       await interaction.deferUpdate()

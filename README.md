@@ -20,7 +20,7 @@
 | `/bindlx [method]` | Discord 内输入 **15 位好友码**；支持换绑、解绑 |
 | `/getuserall sgwcmaid:<二维码或链接>` | 导出完整迁移包，同时保存本地资料并自动同步两边查分器 |
 | `/tomunet sgwcmaid:<二维码或链接>` | 导出官方 UserMusicDetailList，同时保存本地资料并自动同步两边查分器 |
-| `/opt` | 查询 1.56 的 `.opt` 列表；**单选一个包** → 详情 → 下载 → 完成卡直接给「下载文件」URL 按钮；文件落在 `SDGB_UPDATE_DIR`（默认 `/app/.data/sdgb-update`） |
+| `/opt` | 查询 1.56 的 `.opt` 列表；**单选一个包** → 详情 → 下载 → 完成卡直接给「下载文件」URL 按钮；概览另有「下载指示书」按钮，把 DLI 指示書原文（app / option `.txt`）直接作为 Discord 附件发回 |
 | `/help` | 显示同风格的公开命令帮助图 |
 
 ### `/opt` 轮询提醒与分享链接
@@ -29,6 +29,8 @@
 - 下载由用户在 `/opt` 里单选一个包后触发；同一时间只跑一个下载，进度卡可取消，失败可重试。
 - 下载完成后的文件通过 `https://kohad-bot.frkovo.uk/opt-files/<name>?exp=…&sig=…` 提供（HMAC 签名，默认 7 天，`SDGB_OPT_LINK_TTL_SECONDS=0` 为永久）；完成卡与已下载详情里都是「下载文件」URL 按钮，不直接刷一串链接。
 - 该路径由 Bot 现有 3729 监听器提供，nginx 已加 `/opt-files/` 的 Range 透传；支持单段 Range 与 HEAD。
+- 界面不展示包在服务器上的落盘路径；概览只显示磁盘剩余空间，完成卡只给「下载文件」按钮。
+- 「下载指示书」由 Bot 调用 8788 的 `/api/opt/instruction` 取回 DLI 指示書原文（华立 CDN 由 CN 侧代抓），再以 `.txt` 附件发回当前面板消息；不落盘、不生成链接。
 
 所有成功的 SGWCMAID 拉取都会更新本地账户，并独立同步水鱼与落雪：包括 `/upload`、附二维码的三种成绩图和两个导出命令。用户已明确授权每次读取后自动同步，不再保留预览 / 二次确认流程。先提交本地事务，再同步；任何一边失败不影响另一边，也不回滚本地资料。未配置 / 未绑定 / 缺写权限会明确报告原因；水鱼自动同步需要有效 OAuth 写权限。
 
@@ -210,8 +212,7 @@ npm run preview
 | MYSQL_POOL_SIZE | 连接池上限，默认 5（2–10） |
 | REDIS_URL | 扫码去重 / 冷却 / 令牌缓存，默认 `redis://127.0.0.1:6379/0` |
 | B50_DATA_DIR | 渲染缓存与日志目录，默认 `<项目>/.data` |
-| SDGB_UPDATE_DIR | `/opt` 下载目录，默认 `<B50_DATA_DIR>/sdgb-update`（容器 `/app/.data/sdgb-update`，宿主机 `/opt/kohad-bot/data/sdgb-update`） |
-| SDGB_UPDATE_DISPLAY_DIR | 可选：`/opt` 文案展示的宿主机目录，默认显示 `SDGB_UPDATE_DIR` |
+| SDGB_UPDATE_DIR | `/opt` 下载目录，默认 `<B50_DATA_DIR>/sdgb-update`（容器 `/app/.data/sdgb-update`，宿主机 `/opt/kohad-bot/data/sdgb-update`）；只在内部使用，界面不展示 |
 | SDGB_OPT_TRANSPORT | `auto`（默认，直连失败改走服务代理）/ `direct` / `proxy` |
 | SDGB_OPT_PACE_MS / SDGB_OPT_PART_SIZE / SDGB_OPT_MAX_RETRIES | `/opt` 默认片间隔（0=全速）、分片字节（0=整文件单请求，8192=官机分片）、同片失败上限（200） |
 | SDGB_OPT_MAX_BYTES | 单次任务已探测总量上限，0 = 不限（仍检查磁盘余量） |
